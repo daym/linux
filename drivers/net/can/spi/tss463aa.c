@@ -1173,7 +1173,7 @@ static int tss463aa_open(struct net_device *net)
 {
 	struct tss463aa_priv *priv = netdev_priv(net);
 	struct spi_device *spi = priv->spi;
-	unsigned long flags = IRQF_ONESHOT | IRQF_TRIGGER_FALLING; /* FIXME */
+	unsigned long flags = IRQF_ONESHOT | IRQF_TRIGGER_LOW; /* FIXME */
 	int ret;
 
 	ret = open_candev(net);
