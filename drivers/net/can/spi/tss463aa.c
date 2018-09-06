@@ -663,8 +663,8 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		0   1   ?    0    Receive Message
 		1   1   0    0    Reply Request
 		1   0   0    0    Immediate Reply Message [transmit in-frame reply]
-		1   0   0    1    Deferred reply [transmits immediately] [TODO]
-		1   0   1    0    Reply request detector probe [TODO]
+		1   0   0    1    Deferred reply [transmits immediately]
+		1   0   1    0    Reply request detector probe
 
 		?   ?   1    1    Inactive
 		*/
