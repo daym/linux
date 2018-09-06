@@ -46,12 +46,13 @@
 
 #define CANFD_RAK 0x80
 
-/* "Reply request" */
+/* "Reply" request */
 #define CANFD_RNW 0x40
 
 /* TODO: Handle TX error some more. */
 /* TODO: Support EXT some more. */
 /* TODO: Support linked channels. */
+/* TODO: Handle disabled channels better. */
 
 #define TSS463AA_TX_ECHO_SKB_MAX 1
 
