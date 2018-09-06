@@ -394,7 +394,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
 	rak = (frame->flags & CANFD_RAK) != 0;
 
-	channel_offset = tss463aa_hw_match_channel(spi, idt, rnw, rtr, rnw);
+	channel_offset = tss463aa_hw_match_channel(spi, idt, rnw, rtr, rnw/* FIXME: 1? */);
 	if (!channel_offset) {
 		dev_err(&spi->dev, "cannot transmit message since no channel accepts IDT = 0x%X\n", idt);
 		return -ENOENT;
