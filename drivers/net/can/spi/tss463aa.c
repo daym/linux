@@ -45,6 +45,8 @@
 #include <linux/of_gpio.h>
 
 #define CANFD_RAK 0x80
+
+/* "Reply request" */
 #define CANFD_RNW 0x40
 
 /* TODO: Handle TX error some more. */
