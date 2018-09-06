@@ -66,11 +66,11 @@ enum tss463aa_model {
 /* Note: VAN frame could contain up to 224 Bytes of data - but there's no way for that chip to support it. */
 
 /* Note: These contain the sizes of the driver's SPI buffers.
-The chip can transfer 32 Byte per packet max.
-But this here needs to fit command, address and status. */
+The chip can't transfer more than 31 Byte.
+But this here needs to fit address, control and status as well. */
 
-#define TSS463AA_RX_BUF_LEN 35
-#define TSS463AA_TX_BUF_LEN 35
+#define TSS463AA_RX_BUF_LEN 33
+#define TSS463AA_TX_BUF_LEN 33
 
 struct tss463aa_priv {
 	struct can_priv can; /* must be first member */
