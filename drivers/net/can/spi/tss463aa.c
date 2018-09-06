@@ -1147,20 +1147,6 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 				}
 			}
 
-		if (intf & (TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE)) {
-			if (intf & TSS463AA_INTERRUPT_STATUS_TOK) {
-				net->stats.tx_packets++;
-				net->stats.tx_bytes += priv->tx_len - 1;
-				if (priv->tx_len) { /* FIXME: Check condition */
-					can_get_echo_skb(net, 0);
-					priv->tx_len = 0;
-				}
-			} else {
-				net->stats.tx_errors++;
-			}
-			netif_wake_queue(net);
-			can_led_event(net, CAN_LED_EVENT_TX);
-		}
 		if (intf & (TSS463AA_INTERRUPT_STATUS_TE | TSS463AA_INTERRUPT_STATUS_RE))
 			tss463aa_can_error(priv, intf & TSS463AA_INTERRUPT_STATUS_TE);
 	}
