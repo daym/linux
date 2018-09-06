@@ -53,19 +53,35 @@
 /* TODO: Support EXT some more. */
 /* TODO: Support linked channels. */
 /* TODO: Handle disabled channels better. */
-/* TODO: Support "Reply" requests better:
+/* Notes on "Reply" requests better:
 
-We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0.
+We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "send"].
 	Afterwards, CHRx=1, but CHTx may be unchanged (if there was an in-frame reply).
 
-We wait for a Reply request: RNW=1, RTR=0, CHTx=1, CHRx=0
-	Afterwards, CHRx goes to 1.
+----------------------------------------------------------------------------------------
+TODO: Support the following:
 
-We immediately reply: RNW=1, RTR=0, CHTx=0, CHRx=0 (in-frame!)
-	Afterwards, both CHTx and CHRx go to 1.
+We wait for a Reply request: RNW=1, RTR=0, CHTx=1, CHRx=0 [like "receive"]
+	Afterwards, CHRx=1.
 
-We reply later: RNW=1, RTR=0, CHTx=0, CHRx=1
-	Afterwards, CHTx=1, others (including CHRx) unchanged.
+We immediately reply: RNW=1, RTR=0, CHTx=0, CHRx=0 (in-frame!) [somewhat like "send"]
+	Afterwards, CHTx=1, CHRx=1.
+
+We reply later: RNW=1, RTR=0, CHTx=0, CHRx=1 [like "send"]
+	Afterwards, CHTx=1, CHRx unchanged.
+
+So to summarize:
+
+A Reply request potentially needs both ChRX and CHTx of one channel.
+	So we shouldn't also wait for a Reply request (or anything) on the same channel.
+	For "reply later":
+		Block the channel so it can't receive until the reply was sent.
+		Detect transmission done-or-error to unlock.
+	These shouldn't usually auto-receive usually.
+		Auto-receiving a Reply request would be nice, though.
+	If we do auto-receive, we have to make sure that:
+		Transmission is not sent at the same time - because the chip would misdetect it.
+
 */
 
 #define TSS463AA_TX_ECHO_SKB_MAX 1
@@ -267,18 +283,29 @@ static int tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
 	return 0;
 }
 
+/* Reads the channel ID and the setup from the channel at CHANNEL_OFFSET.
+
+The channel ID is stored into out_id, which is not optional.
+The channel setup is stored into out_setup, if that is provided.
+*/
 __attribute__((warn_unused_result))
-static u16 tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset)
+static int tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* out_id, u8* out_setup)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	int ret;
 
 	priv->spi_tx_buf[0] = channel_offset;
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
 	priv->spi_tx_buf[2] = 0xFF;
 	priv->spi_tx_buf[3] = 0xFF;
 	/* FIXME: Check for errors */
-	tss463aa_spi_trans(spi, 4);
-	return (priv->spi_rx_buf[2] << 4) | (priv->spi_rx_buf[3] >> 4);
+	ret = tss463aa_spi_trans(spi, 4);
+	if (ret)
+		return ret;
+	*out_id = (priv->spi_rx_buf[2] << 4) | (priv->spi_rx_buf[3] >> 4);
+	if (out_setup)
+		*out_setup = priv->spi_rx_buf[3] & 0x0F;
+	return 0;
 }
 
 #define TSS463AA_COMMAND 3
@@ -305,13 +332,25 @@ static int tss463aa_hw_sleep(struct spi_device *spi)
 #define TSS463AA_CHANNEL_COUNT 14
 
 __attribute__((warn_unused_result))
-static u8 tss463aa_hw_find_matching_channel_offset(struct spi_device *spi, u16 idt)
+static u8 tss463aa_hw_find_matching_channel_offset(struct spi_device *spi, u16 idt, int rnw)
 {
 	u8 channel_offset;
+	u8 rsetup;
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
-		u16 id = tss463aa_hw_read_id(spi, channel_offset);
-		u16 idmask = tss463aa_hw_read_id(spi, channel_offset + 6);
-		if ((id & idmask) == idt) {
+		u16 id;
+		u16 idmask;
+		int ret;
+		u8 rrnw = 0;
+		ret = tss463aa_hw_read_id(spi, channel_offset, &id, &rsetup);
+		if (ret == 0) {
+			rrnw = (rsetup & 2) != 0;
+			ret = tss463aa_hw_read_id(spi, channel_offset + 6, &idmask, NULL);
+		}
+		if (ret) {
+			dev_err(&spi->dev, "could not read channel configuration.\n");
+			return ret;
+		}
+		if ((id & idmask) == idt && rnw == rrnw) {
 			return channel_offset;
 		}
 	}
@@ -345,15 +384,19 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	u16 idt;
 	u8 channel_offset;
 	u8 ret;
-	u8 rtr;
-	u8 rnw;
-	u8 rak;
+	int rtr;
+	int rnw;
+	int rak;
 	u8 len1 = frame->len + 1; /* includes the status dummy */
 	if ((frame->can_id & CAN_EFF_FLAG) != 0)
 		idt = frame->can_id & CAN_EFF_MASK;
 	else
 		idt = frame->can_id & CAN_SFF_MASK;
-	channel_offset = tss463aa_hw_find_matching_channel_offset(spi, idt);
+	rnw = (frame->flags & CANFD_RNW) != 0;
+	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
+	rak = (frame->flags & CANFD_RAK) != 0;
+
+	channel_offset = tss463aa_hw_find_matching_channel_offset(spi, idt, rnw);
 	if (!channel_offset) {
 		dev_err(&spi->dev, "cannot transmit message since no channel accepts IDT = 0x%X\n", idt);
 		return -ENOENT;
@@ -362,10 +405,6 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	ret = tss463aa_hw_tx_frame(spi, channel_offset, frame->data, frame->len);
 	if (ret)
 		return ret;
-
-	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
-	rnw = (frame->flags & CANFD_RNW) != 0;
-	rak = (frame->flags & CANFD_RAK) != 0;
 
 	ret = tss463aa_hw_write(spi, channel_offset + 1,
 	                     (tss463aa_hw_read(spi, channel_offset + 1) &~ 1) |
@@ -376,8 +415,11 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 		return ret;
 
 	/* Transmit */
+	u8 mask = 5;
+	if (rnw && rtr) /* "Reply" request: Allow receiving, for a short while. */
+		mask = 4;
 	ret = tss463aa_hw_write(spi, channel_offset + 3,
-	                        (tss463aa_hw_read(spi, channel_offset + 3) & 5) |
+	                        (tss463aa_hw_read(spi, channel_offset + 3) & mask) |
                                 (len1 << 3));
 	return ret;
 }
@@ -407,16 +449,14 @@ static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
 
 /* Precondition: There is a message to be received already. */
 __attribute__((warn_unused_result))
-static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset)
+static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	u8* buf;
-	u16 id;
 	int ret;
 	struct sk_buff *skb;
 	struct canfd_frame *frame;
 
-	id = tss463aa_hw_read_id(spi, channel_offset);
 	ret = tss463aa_hw_rx_frame(spi, channel_offset);
 	if (ret)
 		return ret;
@@ -424,11 +464,9 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset)
 
 	u8 msglen = buf[0] & 0x1F;
 	u8 dlen;
-	if (msglen == 0) {
-		dev_err(&spi->dev, "internal error: received message contained M_L==0 - which should be impossible.\n");
-		return -EIO;
-	}
-	dlen = msglen - 1;
+	if (msglen == 0)
+		dev_warn(&spi->dev, "internal error: received message contained M_L==0 - which should be impossible.\n");
+	dlen = msglen ? msglen - 1 : 0;
 	if (dlen > CANFD_MAX_DLEN) {
 		dev_warn(&spi->dev, "received message was too long - ignored.\n");
 		return -E2BIG;
@@ -457,6 +495,7 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset)
 	can_led_event(priv->net, CAN_LED_EVENT_RX);
 
 	netif_rx_ni(skb);
+
 	return 0;
 }
 
@@ -628,7 +667,7 @@ static int tss463aa_activate(struct spi_device *spi)
 #define TSS463AA_CHANNELDRAK 0x80
 
 __attribute__((warn_unused_result))
-static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, u8 CHTx, u8 CHRx, u8 msgpointer, u8 msglen, u8 ext, u8 rak, u8 rnw, u8 rtr, u8 drak)
+static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, int CHTx, int CHRx, u8 msgpointer, u8 msglen, int ext, int rak, int rnw, int rtr, int drak)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
@@ -663,17 +702,15 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		u8 msglen = 0;
 		u16 idtag = 0;
 		u16 idmask = 0xFFF;
-
-		u8 drak = of_property_read_bool(dt_node, "tss463aa,disable-ack-request");
-		u8 receiver = of_property_read_bool(dt_node, "tss463aa,receiver");
-		u8 transmitter = of_property_read_bool(dt_node, "tss463aa,transmitter");
-		u8 CHRx = !receiver;
-		u8 CHTx = !transmitter;
-
 		u32 msgtype;
 
-		u8 ext = !of_property_read_bool(dt_node, "tss463aa,disable-recessive-ext");
-		u8 rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
+		int drak = of_property_read_bool(dt_node, "tss463aa,disable-ack-request");
+		int receiver = of_property_read_bool(dt_node, "tss463aa,receiver");
+		int CHRx = !receiver; /* CHRx: RX done */
+		int CHTx = 1; /* CHTx: TX done */
+
+		int ext = !of_property_read_bool(dt_node, "tss463aa,disable-recessive-ext");
+		int rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
 		/*
 		RNW RTR CHTx CHRx Meaning
 		0   0   0    ?    Transmit Message
@@ -685,17 +722,21 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 
 		?   ?   1    1    Inactive
 		*/
-		u8 rnw = receiver && transmitter;
-		u8 rtr = receiver; /* FIXME: Should be: rtr=1: frame contains no data.  Also, the CAN Linux interface contains an RTR flag in id already! */
+		int rnw = 0;
+		int rtr = 0;
 
 		if (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY)
 			drak = 1;
 
 		if (of_property_read_u32(dt_node, "tss463aa,msgtype", &msgtype) == 0) {
+			int nCHRx = (msgtype & 1) != 0;
+			if (nCHRx != CHRx) {
+				dev_warn(&spi->dev, "settings \"msgtype\" and \"receiver\" are contradictory. \"msgtype\" wins.\n");
+			}
+			CHRx = nCHRx;
 			rnw = (msgtype & 8) != 0;
 			rtr = (msgtype & 4) != 0;
 			CHTx = (msgtype & 2) != 0;
-			CHRx = (msgtype & 1) != 0;
 		}
 
 		if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
@@ -1145,10 +1186,23 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 				u8 channel_status = tss463aa_hw_read(spi, channel_offset + 3);
 				if (channel_status & 1) { /* RX occupied */
 					// TODO: Check TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK ?
-					tss463aa_hw_rx(spi, channel_offset);
-					tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 1);
-				}
-				if (channel_status & 2) { /* TX free */
+					u16 id;
+					u8 setup;
+					tss463aa_hw_read_id(spi, channel_offset, &id, &setup);
+					tss463aa_hw_rx(spi, channel_offset, id);
+					if ((setup & (2 | 1)) == (2 | 1)) { /* RNW, RTR. So a Reply request. */
+						/* If there was an in-frame reply by another module,
+						   it's possible that CHTx=0 because the TX message
+						   was never finished. This would mean we'd lose
+						   our ability to transmit.
+						   Restore it here and lose the TX message. */
+						channel_status |= 2; /* CHTx */
+						tss463aa_hw_write(spi, channel_offset + 3, channel_status);
+					} else {
+						/* Allow receiving another message. */
+						tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 1);
+					}
+				} else if (channel_status & 2) { /* TX done */
 					/* Record previous transmission stats */
 					if (priv->tx_len) {
 						net->stats.tx_packets++;
@@ -1161,8 +1215,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 						/* Allow new transmission */
 						netif_wake_queue(net);
 					}
-				}
-				if (channel_status & 4) { /* CHER */
+				} else if (channel_status & 4) { /* CHER */
 					int ret;
 					/* TODO: Get error (if possible) */
 					dev_warn(&spi->dev, "channel with offset %u logged an error. Clearing it.\n", channel_offset);
@@ -1173,7 +1226,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 			}
 
 		if (intf & (TSS463AA_INTERRUPT_STATUS_TE | TSS463AA_INTERRUPT_STATUS_RE))
-			tss463aa_can_error(priv, intf & TSS463AA_INTERRUPT_STATUS_TE);
+			tss463aa_can_error(priv, (intf & TSS463AA_INTERRUPT_STATUS_TE) != 0);
 	}
 	mutex_unlock(&priv->tss463aa_lock);
 	return IRQ_HANDLED;
