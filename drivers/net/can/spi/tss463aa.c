@@ -65,19 +65,11 @@ We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "transmit"]
 We wait for a Reply request: RNW=1, RTR=0, CHTx=1, CHRx=0 [like "receive"]
 	Afterwards, CHRx=1.
 
-TODO: Support the following:
-
 We immediately reply: RNW=1, RTR=0, CHTx=0, CHRx=0 (in-frame!) [somewhat like "send"]
 	Afterwards, CHTx=1, CHRx=1.
 
 We reply later: RNW=1, RTR=0, CHTx=0, CHRx=1 [like "send"]
 	Afterwards, CHTx=1, CHRx unchanged.
-
-So to summarize:
-
-For "reply later":
-	Block the channel so it can't receive until the reply was sent.
-	Detect transmission done-or-error to unlock.
 
 */
 
@@ -415,7 +407,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 
 	/* Transmit */
 	u8 mask = 5;
-	if (rnw && rtr) /* "Reply" request: Allow receiving, once. */
+	if (rnw) /* "Reply" request (either sent or received): Allow receiving, once. */
 		mask = 4;
 	ret = tss463aa_hw_write(spi, channel_offset + 3,
 	                        (tss463aa_hw_read(spi, channel_offset + 3) & mask) |
@@ -1189,7 +1181,8 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 					u8 setup;
 					tss463aa_hw_read_id(spi, channel_offset, &id, &setup);
 					tss463aa_hw_rx(spi, channel_offset, id);
-					if ((setup & (2 | 1)) == (2 | 1)) { /* RNW, RTR. */
+					if ((setup & 2) == 2) {
+						/* "Reply" requests don't receive automatically. */
 						if ((setup & (2 | 1)) == (2 | 1)) { /* RNW, RTR. So a Reply request. */
 							/* If there was an in-frame reply by another module,
 							   it's possible that CHTx=0 because the TX message
