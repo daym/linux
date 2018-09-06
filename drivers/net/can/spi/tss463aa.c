@@ -55,16 +55,17 @@
 /* TODO: Handle disabled channels better. */
 /* Notes on "Reply" requests:
 
-We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "send"].
+We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "transmit"].
 	Afterwards, CHRx=1, but CHTx may be unchanged (if there was an in-frame reply).
 	A Reply request potentially needs both Rx and Tx of one channel at the same time.
 		So we shouldn't also wait for a Reply request (or anything) on the same channel.
 
-------------------------------------------------------------------------------------------------
-TODO: Support the following:
+----------------------------------- or ------------------------------------------------------------
 
 We wait for a Reply request: RNW=1, RTR=0, CHTx=1, CHRx=0 [like "receive"]
 	Afterwards, CHRx=1.
+
+TODO: Support the following:
 
 We immediately reply: RNW=1, RTR=0, CHTx=0, CHRx=0 (in-frame!) [somewhat like "send"]
 	Afterwards, CHTx=1, CHRx=1.
@@ -414,7 +415,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 
 	/* Transmit */
 	u8 mask = 5;
-	if (rnw && rtr) /* "Reply" request: Allow receiving, for a short while. */
+	if (rnw && rtr) /* "Reply" request: Allow receiving, once. */
 		mask = 4;
 	ret = tss463aa_hw_write(spi, channel_offset + 3,
 	                        (tss463aa_hw_read(spi, channel_offset + 3) & mask) |
@@ -1188,14 +1189,16 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 					u8 setup;
 					tss463aa_hw_read_id(spi, channel_offset, &id, &setup);
 					tss463aa_hw_rx(spi, channel_offset, id);
-					if ((setup & (2 | 1)) == (2 | 1)) { /* RNW, RTR. So a Reply request. */
-						/* If there was an in-frame reply by another module,
-						   it's possible that CHTx=0 because the TX message
-						   was never finished. This would mean we'd lose
-						   our ability to transmit.
-						   Restore it here and lose the TX message. */
-						channel_status |= 2; /* CHTx */
-						tss463aa_hw_write(spi, channel_offset + 3, channel_status);
+					if ((setup & (2 | 1)) == (2 | 1)) { /* RNW, RTR. */
+						if ((setup & (2 | 1)) == (2 | 1)) { /* RNW, RTR. So a Reply request. */
+							/* If there was an in-frame reply by another module,
+							   it's possible that CHTx=0 because the TX message
+							   was never finished. This would mean we'd lose
+							   our ability to transmit.
+							   Restore it here and lose the TX message. */
+							channel_status |= 2; /* CHTx */
+							tss463aa_hw_write(spi, channel_offset + 3, channel_status);
+						}
 					} else {
 						/* Allow receiving another message. */
 						tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 1);
