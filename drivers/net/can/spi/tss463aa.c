@@ -314,8 +314,8 @@ static int tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_offset, u8 *b
 	priv->spi_tx_buf[2] = 0; /* dummy */
 	if (len > TSS463AA_TX_BUF_LEN - 3)
 		len = TSS463AA_TX_BUF_LEN - 3;
-	if (len > msglen)
-		len = msglen; /* FIXME off-by-one ?? */
+	if (len > msglen - 1) /* 1: The dummy above */
+		len = msglen - 1;
 	memcpy(priv->spi_tx_buf + 3, buf, len);
 	return tss463aa_spi_trans(spi, len + 3);
 }
@@ -330,7 +330,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	u8 rtr;
 	u8 rnw;
 	u8 rak;
-	u8 len1 = frame->len + 1;
+	u8 len1 = frame->len + 1; /* includes the status dummy */
 	if ((frame->can_id & CAN_EFF_FLAG) != 0)
 		idt = frame->can_id & CAN_EFF_MASK;
 	else
@@ -366,7 +366,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 
 /* Precondition: There is a message to be received already. */
 __attribute__((warn_unused_result))
-static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 *buf, u8 channel_offset)
+static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
@@ -392,20 +392,26 @@ __attribute__((warn_unused_result))
 static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
-	u8 buf[TSS463AA_RX_BUF_LEN - 2];
+	u8* buf;
 	u16 id;
 	int ret;
 	struct sk_buff *skb;
 	struct canfd_frame *frame;
 
 	id = tss463aa_hw_read_id(spi, channel_offset);
-	ret = tss463aa_hw_rx_frame(spi, buf, channel_offset);
+	ret = tss463aa_hw_rx_frame(spi, channel_offset);
 	if (ret)
 		return ret;
+	buf = priv->spi_rx_buf + 2;
 
 	u8 msglen = buf[0] & 0x1F;
-	u8 len = msglen - 1; /* FIXME: Test. */
-	if (len > CANFD_MAX_DLEN) {
+	u8 dlen;
+	if (msglen == 0) {
+		dev_err(&spi->dev, "internal error: received message contained M_L==0 - which should be impossible.\n");
+		return -EIO;
+	}
+	dlen = msglen - 1;
+	if (dlen > CANFD_MAX_DLEN) {
 		dev_warn(&spi->dev, "received message was too long - ignored.\n");
 		return -E2BIG;
 	}
@@ -414,8 +420,8 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset)
 		priv->net->stats.rx_dropped++;
 		return -ENOMEM;
 	}
-	memcpy(frame->data, buf + 1, frame->len); /* FIXME test */
-	frame->len = len;
+	frame->len = dlen;
+	memcpy(frame->data, buf + 1, dlen);
 
 	if (buf[0] & 0x20)
 		frame->can_id |= CAN_RTR_FLAG;
