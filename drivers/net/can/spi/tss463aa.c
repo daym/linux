@@ -53,12 +53,14 @@
 /* TODO: Support EXT some more. */
 /* TODO: Support linked channels. */
 /* TODO: Handle disabled channels better. */
-/* Notes on "Reply" requests better:
+/* Notes on "Reply" requests:
 
 We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "send"].
 	Afterwards, CHRx=1, but CHTx may be unchanged (if there was an in-frame reply).
+	A Reply request potentially needs both Rx and Tx of one channel at the same time.
+		So we shouldn't also wait for a Reply request (or anything) on the same channel.
 
-----------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------
 TODO: Support the following:
 
 We wait for a Reply request: RNW=1, RTR=0, CHTx=1, CHRx=0 [like "receive"]
@@ -72,15 +74,9 @@ We reply later: RNW=1, RTR=0, CHTx=0, CHRx=1 [like "send"]
 
 So to summarize:
 
-A Reply request potentially needs both ChRX and CHTx of one channel.
-	So we shouldn't also wait for a Reply request (or anything) on the same channel.
-	For "reply later":
-		Block the channel so it can't receive until the reply was sent.
-		Detect transmission done-or-error to unlock.
-	These shouldn't usually auto-receive usually.
-		Auto-receiving a Reply request would be nice, though.
-	If we do auto-receive, we have to make sure that:
-		Transmission is not sent at the same time - because the chip would misdetect it.
+For "reply later":
+	Block the channel so it can't receive until the reply was sent.
+	Detect transmission done-or-error to unlock.
 
 */
 
@@ -332,7 +328,7 @@ static int tss463aa_hw_sleep(struct spi_device *spi)
 #define TSS463AA_CHANNEL_COUNT 14
 
 __attribute__((warn_unused_result))
-static u8 tss463aa_hw_find_matching_channel_offset(struct spi_device *spi, u16 idt, int rnw)
+static u8 tss463aa_hw_match_channel(struct spi_device *spi, u16 idt, int rnw, int rtr, int use_rtr)
 {
 	u8 channel_offset;
 	u8 rsetup;
@@ -341,8 +337,10 @@ static u8 tss463aa_hw_find_matching_channel_offset(struct spi_device *spi, u16 i
 		u16 idmask;
 		int ret;
 		u8 rrnw = 0;
+		u8 rrtr = 0;
 		ret = tss463aa_hw_read_id(spi, channel_offset, &id, &rsetup);
 		if (ret == 0) {
+			rrtr = (rsetup & 1) != 0;
 			rrnw = (rsetup & 2) != 0;
 			ret = tss463aa_hw_read_id(spi, channel_offset + 6, &idmask, NULL);
 		}
@@ -350,7 +348,7 @@ static u8 tss463aa_hw_find_matching_channel_offset(struct spi_device *spi, u16 i
 			dev_err(&spi->dev, "could not read channel configuration.\n");
 			return ret;
 		}
-		if ((id & idmask) == idt && rnw == rrnw) {
+		if ((id & idmask) == idt && rnw == rrnw && (rtr == rrtr || !use_rtr)) {
 			return channel_offset;
 		}
 	}
@@ -396,7 +394,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
 	rak = (frame->flags & CANFD_RAK) != 0;
 
-	channel_offset = tss463aa_hw_find_matching_channel_offset(spi, idt, rnw);
+	channel_offset = tss463aa_hw_match_channel(spi, idt, rnw, rtr, rnw);
 	if (!channel_offset) {
 		dev_err(&spi->dev, "cannot transmit message since no channel accepts IDT = 0x%X\n", idt);
 		return -ENOENT;
