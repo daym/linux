@@ -1301,6 +1301,7 @@ static int tss463aa_can_probe(struct spi_device *spi)
 	priv->can.do_set_mode = tss463aa_set_mode;
 	priv->can.clock.freq = freq /* / 16*/; /* Note: TS/s */
 	priv->can.ctrlmode_supported = CAN_CTRLMODE_LISTENONLY | CAN_CTRLMODE_FD;
+	priv->can.ctrlmode_static = CAN_CTRLMODE_FD;
 
 	if (of_id)
 		priv->model = (enum tss463aa_model)of_id->data;
