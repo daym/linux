@@ -52,7 +52,7 @@
 /* TODO: Handle TX error some more. */
 /* TODO: Support EXT some more. */
 /* TODO: Support linked channels. */
-/* TODO: Handle disabled channels better. */
+/* TODO: Handle disabled channels better (right now, only reception is disabled - transmission is not). */
 /* Notes on "Reply" requests:
 
 We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "transmit"].
@@ -888,7 +888,10 @@ static int tss463aa_setup(struct tss463aa_priv *priv)
 	struct spi_device *spi = priv->spi;
 	u8 channel_offset;
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
-		int ret = tss463aa_hw_write(spi, channel_offset + 3, 7); /* Set CHER, CHTx, CHRx */
+		int ret = tss463aa_hw_write(spi, channel_offset + 1, 3); /* Set RNW, RTR so that reception stays disabled on this channel. */
+		if (ret)
+			return ret;
+		ret = tss463aa_hw_write(spi, channel_offset + 3, 7); /* Set CHTx, CHRx */
 		if (ret)
 			return ret;
 	}
