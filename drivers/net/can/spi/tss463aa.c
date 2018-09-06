@@ -53,6 +53,20 @@
 /* TODO: Support EXT some more. */
 /* TODO: Support linked channels. */
 /* TODO: Handle disabled channels better. */
+/* TODO: Support "Reply" requests better:
+
+We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0.
+	Afterwards, CHRx=1, but CHTx maybe unchanged (if there was an in-frame reply).
+
+We wait for a Reply request: RNW=1, RTR=0, CHTx=1, CHRx=0
+	Afterwards, CHRx goes to 1.
+
+We immediately reply: RNW=1, RTR=0, CHTx=0, CHRx=0 (in-frame!)
+	Both CHTx and CHRx will go to 1.
+
+We reply later: RNW=1, RTR=0, CHTx=0, CHRx=1
+	Afterwards, CHTx=1, others (including CHRx) unchanged.
+*/
 
 #define TSS463AA_TX_ECHO_SKB_MAX 1
 
