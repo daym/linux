@@ -46,7 +46,7 @@
 
 #define CANFD_RAK 0x80
 
-/* "Reply" request */
+/* "Reply" request, f.e. read-register. */
 #define CANFD_RNW 0x40
 
 /* TODO: Handle TX error some more. */
@@ -85,8 +85,6 @@ enum tss463aa_model {
 
 /* TODO: CAN_CTRLMODE_BERR_REPORTING, CAN_CTRLMODE_LOOPBACK */
 /* TODO: Allow setting CAN FD "data" bit rate (which must be at least as high as the arbitration bitrate) */
-
-/* Note: VAN frame could contain up to 224 Bytes of data - but there's no way for that chip to support it. */
 
 /* Note: These contain the sizes of the driver's SPI buffers.
 The chip can't transfer more than 31 Byte.
