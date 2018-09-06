@@ -1125,7 +1125,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 					tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 1);
 				}
 				if (channel_status & 2) { /* TX free */
-					/* Check whether there's more to send */
+					/* Record previous transmission stats */
 					if (priv->tx_len) {
 						net->stats.tx_packets++;
 						net->stats.tx_bytes += priv->tx_len - 1;
@@ -1134,6 +1134,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							can_get_echo_skb(net, 0);
 							priv->tx_len = 0;
 						}
+						/* Allow new transmission */
 						netif_wake_queue(net);
 					}
 				}
