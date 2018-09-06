@@ -1,0 +1,1501 @@
+/* VAN bus driver for TSS463 VAN Controller with SPI Interface
+ *
+ * Copyright 2018 Danny Milosavljevic <dannym@scratchpost.org>
+ *
+ * Based on CAN bus driver for HI3110 CAN Controller with SPI Interface
+ * Copyright 2016 Timesys Corporation
+ *
+ * Based on Microchip 251x CAN Controller (mcp251x) Linux kernel driver
+ * Copyright 2009 Christian Pellegrin EVOL S.r.l.
+ * Copyright 2007 Raymarine UK, Ltd. All Rights Reserved.
+ * Copyright 2006 Arcom Control Systems Ltd.
+ *
+ * Based on CAN bus driver for the CCAN controller written by
+ * - Sascha Hauer, Marc Kleine-Budde, Pengutronix
+ * - Simon Kallweit, intefo AG
+ * Copyright 2007
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ */
+
+#include <linux/can/core.h>
+#include <linux/can/dev.h>
+#include <linux/can/led.h>
+#include <linux/clk.h>
+#include <linux/completion.h>
+#include <linux/delay.h>
+#include <linux/device.h>
+#include <linux/dma-mapping.h>
+#include <linux/freezer.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/netdevice.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
+#include <linux/slab.h>
+#include <linux/spi/spi.h>
+#include <linux/uaccess.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
+
+#define CANFD_RAK 0x80
+#define CANFD_RNW 0x40
+
+/* TODO: Handle TX error some more. */
+/* TODO: Support EXT some more. */
+
+#define TSS463AA_TX_ECHO_SKB_MAX 1
+
+static int tss463aa_enable_dma = 1; /* Enable SPI DMA. Default: 1 (On) */
+module_param(tss463aa_enable_dma, int, 0444);
+MODULE_PARM_DESC(tss463aa_enable_dma, "Enable SPI DMA. Default: 1 (On)");
+
+enum tss463aa_model {
+	CAN_TSS463AA_TSS463AA = 0x4631,
+};
+
+/* TODO: CAN_CTRLMODE_BERR_REPORTING, CAN_CTRLMODE_LOOPBACK */
+/* TODO: Allow setting CAN FD "data" bit rate (which must be at least as high as the arbitration bitrate) */
+
+/* Note: VAN frame could contain up to 224 Bytes of data - but there's no way for that chip to support it. */
+
+/* Note: These contain the sizes of the driver's SPI buffers.
+The chip can transfer 32 Byte per packet max.
+But this here needs to fit command, address and status. */
+
+#define TSS463AA_RX_BUF_LEN 35
+#define TSS463AA_TX_BUF_LEN 35
+
+struct tss463aa_priv {
+	struct can_priv can; /* must be first member */
+	struct net_device *net;
+	struct spi_device *spi;
+	enum tss463aa_model model;
+	__u32 xtal_clock_frequency;
+
+	struct mutex tss463aa_lock;
+
+	u8 *spi_tx_buf;
+	u8 *spi_rx_buf;
+	dma_addr_t spi_tx_dma;
+	dma_addr_t spi_rx_dma;
+
+	struct sk_buff *tx_skb;
+	int tx_len;
+
+	struct workqueue_struct *wq;
+	struct work_struct tx_work;
+	struct work_struct restart_work;
+
+	int force_quit;
+	int after_suspend;
+#define TSS463AA_AFTER_SUSPEND_UP 1
+#define TSS463AA_AFTER_SUSPEND_DOWN 2
+#define TSS463AA_AFTER_SUSPEND_POWER 4
+#define TSS463AA_AFTER_SUSPEND_RESTART 8
+	int restart_tx;
+	struct regulator *power;
+	struct clk *clk;
+	struct gpio_desc *reset;
+};
+
+static void tss463aa_clean(struct net_device *net)
+{
+	struct tss463aa_priv *priv = netdev_priv(net);
+
+	if (priv->tx_skb || priv->tx_len)
+		net->stats.tx_errors++;
+	if (priv->tx_skb)
+		dev_kfree_skb(priv->tx_skb);
+	if (priv->tx_len)
+		can_free_echo_skb(priv->net, 0);
+	priv->tx_skb = NULL;
+	priv->tx_len = 0;
+}
+
+/* Note: assert XTAL < (MAX_UDELAY_MS 1000 us = 5000 us) for udelay to work. */
+#define XTAL_us(cycles) DIV_ROUND_UP(((cycles)*1000000), priv->xtal_clock_frequency)
+
+__attribute__((warn_unused_result))
+static int tss463aa_spi_trans(struct spi_device *spi, int len)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	BUG_ON(len < 2);
+
+	struct spi_transfer t_lead = {
+		.tx_buf = NULL,
+		.rx_buf = NULL,
+		.len = 0,
+		.delay_usecs = XTAL_us(4),
+	};
+	struct spi_transfer t_address = {
+		.tx_buf = priv->spi_tx_buf,
+		.rx_buf = priv->spi_rx_buf,
+		.tx_dma = tss463aa_enable_dma ? priv->spi_tx_dma : 0,
+		.rx_dma = tss463aa_enable_dma ? priv->spi_rx_dma : 0,
+		.len = 1,
+		.delay_usecs = XTAL_us(8),
+	};
+	struct spi_transfer t_control = {
+		.tx_buf = priv->spi_tx_buf ? priv->spi_tx_buf + 1 : NULL,
+		.rx_buf = priv->spi_rx_buf ? priv->spi_rx_buf + 1 : NULL,
+		.tx_dma = tss463aa_enable_dma ? priv->spi_tx_dma + 1 : 0,
+		.rx_dma = tss463aa_enable_dma ? priv->spi_rx_dma + 1 : 0,
+		.len = 1,
+		.delay_usecs = XTAL_us(15),
+	};
+	struct spi_transfer t_body = {
+		.tx_buf = priv->spi_tx_buf ? priv->spi_tx_buf + 2 : NULL,
+		.rx_buf = priv->spi_rx_buf ? priv->spi_rx_buf + 2 : NULL,
+		.tx_dma = tss463aa_enable_dma ? priv->spi_tx_dma + 2 : 0,
+		.rx_dma = tss463aa_enable_dma ? priv->spi_rx_dma + 2 : 0,
+		.len = len - 2,
+		.cs_change = 0,
+		.delay_usecs = XTAL_us(12),
+	};
+	struct spi_message m;
+	int ret;
+
+	spi_message_init(&m);
+	if (tss463aa_enable_dma)
+		m.is_dma_mapped = 1;
+	spi_message_add_tail(&t_lead, &m);
+	spi_message_add_tail(&t_address, &m);
+	spi_message_add_tail(&t_control, &m);
+	spi_message_add_tail(&t_body, &m);
+	ret = spi_sync(spi, &m);
+	if (ret)
+		dev_err(&spi->dev, "SPI transfer failed: ret = %d\n", ret);
+	else if (priv->spi_tx_buf[1] && (priv->spi_rx_buf[0] != 0xAA || priv->spi_rx_buf[1] != 0x55)) { /* Note: not on reset */
+		dev_err(&spi->dev, "chip is out of sync\n");
+	}
+	return ret;
+}
+
+/* Postcondition: Chip is in IDLE mode. */
+__attribute__((warn_unused_result))
+static int tss463aa_hw_reset(struct spi_device *spi)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	int ret;
+	dev_dbg(&spi->dev, "tss463aa_hw_reset\n");
+
+	if (priv->reset) {
+		gpiod_set_value(priv->reset, 0);
+		udelay(XTAL_us(12)); /* FIXME: How long? */
+		gpiod_set_value(priv->reset, 1);
+		udelay(XTAL_us(12));
+	}
+	/* Perform soft reset and set up Motorola SPI mode */
+	priv->spi_tx_buf[0] = 0;
+	priv->spi_tx_buf[1] = 0;
+	ret = tss463aa_spi_trans(spi, 2);
+	if (ret)
+		dev_err(&spi->dev, "soft reset failed.\n");
+	return ret;
+}
+
+__attribute__((warn_unused_result))
+static int tss463aa_hw_probe(struct spi_device *spi)
+{
+	tss463aa_hw_reset(spi);
+	return 0;
+}
+
+#define TSS463AA_REGISTER_READ 0x60
+#define TSS463AA_REGISTER_WRITE 0xE0
+
+__attribute__((warn_unused_result))
+static u8 tss463aa_hw_read(struct spi_device *spi, u8 reg)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	u8 val = 0;
+	int ret;
+
+	priv->spi_tx_buf[0] = reg;
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
+	priv->spi_tx_buf[2] = 0xFF; /* dummy value */
+	ret = tss463aa_spi_trans(spi, 3);
+	if (ret) {
+		dev_err(&spi->dev, "read failed.\n");
+		/* FIXME: Fail somehow? */
+		return 0;
+	}
+	val = priv->spi_rx_buf[2];
+	return val;
+}
+
+__attribute__((warn_unused_result))
+static int tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	int ret;
+
+	priv->spi_tx_buf[0] = reg;
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
+	priv->spi_tx_buf[2] = val;
+	ret = tss463aa_spi_trans(spi, 3);
+	if (ret) {
+		dev_err(&spi->dev, "write failed.\n");
+		return ret;
+	}
+	/* Note: priv->spi_rx_buf[2] == 0xFF */
+	return 0;
+}
+
+__attribute__((warn_unused_result))
+static u16 tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+
+	priv->spi_tx_buf[0] = channel_offset;
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
+	priv->spi_tx_buf[2] = 0xFF;
+	priv->spi_tx_buf[3] = 0xFF;
+	/* FIXME: Check for errors */
+	tss463aa_spi_trans(spi, 4);
+	return (priv->spi_rx_buf[2] << 4) | (priv->spi_rx_buf[3] >> 4);
+}
+
+#define TSS463AA_COMMAND 3
+#define TSS463AA_COMMAND_SLEEP 64
+#define TSS463AA_COMMAND_IDLE 32
+#define TSS463AA_COMMAND_ACTIVATE 16
+#define TSS463AA_COMMAND_REAR 8
+#define TSS463AA_COMMAND_MSDC 1
+
+/* Note: To wake up, call tss463aa_reset. */
+__attribute__((warn_unused_result))
+static int tss463aa_hw_sleep(struct spi_device *spi)
+{
+	int ret = tss463aa_hw_write(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_SLEEP);
+	/* TODO: Poll line status to see whether it was done already? */
+	if (ret)
+		dev_warn(&spi->dev, "could not send chip to sleep.\n");
+	return ret;
+}
+
+#define TSS463AA_CHANNEL0_OFFSET 0x10
+#define TSS463AA_CHANNEL1_OFFSET 0x18
+#define TSS463AA_CHANNEL_SIZE 0x08
+#define TSS463AA_CHANNEL_COUNT 14
+
+__attribute__((warn_unused_result))
+static u8 tss463aa_hw_find_matching_channel_offset(struct spi_device *spi, u16 idt)
+{
+	u8 channel_offset;
+	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
+		u16 id = tss463aa_hw_read_id(spi, channel_offset);
+		u16 idmask = tss463aa_hw_read_id(spi, channel_offset + 6);
+		if ((id & idmask) == idt) {
+			return channel_offset;
+		}
+	}
+	return 0;
+}
+
+/* Precondition: Buffer is not occupied */
+__attribute__((warn_unused_result))
+static int tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_offset, u8 *buf, unsigned len)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+
+	u8 msgpointer = tss463aa_hw_read(priv->spi, channel_offset + 2) & 0x7F;
+	u8 msglen = tss463aa_hw_read(priv->spi, channel_offset + 3) >> 3;
+
+	priv->spi_tx_buf[0] = msgpointer;
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
+	priv->spi_tx_buf[2] = 0; /* dummy */
+	if (len > TSS463AA_TX_BUF_LEN - 3)
+		len = TSS463AA_TX_BUF_LEN - 3;
+	if (len > msglen)
+		len = msglen; /* FIXME off-by-one ?? */
+	memcpy(priv->spi_tx_buf + 3, buf, len);
+	return tss463aa_spi_trans(spi, len + 3);
+}
+
+/* Precondition: Buffer is not occupied */
+__attribute__((warn_unused_result))
+static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
+{
+	u16 idt;
+	u8 channel_offset;
+	u8 ret;
+	u8 rtr;
+	u8 rnw;
+	u8 rak;
+	u8 len1 = frame->len + 1;
+	if ((frame->can_id & CAN_EFF_FLAG) != 0)
+		idt = frame->can_id & CAN_EFF_MASK;
+	else
+		idt = frame->can_id & CAN_SFF_MASK;
+	channel_offset = tss463aa_hw_find_matching_channel_offset(spi, idt);
+	if (!channel_offset) {
+		dev_err(&spi->dev, "cannot transmit message since no channel accepts IDT = 0x%X\n", idt);
+		return -ENOENT;
+	}
+
+	ret = tss463aa_hw_tx_frame(spi, channel_offset, frame->data, frame->len);
+	if (ret)
+		return ret;
+
+	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
+	rnw = (frame->flags & CANFD_RNW) != 0;
+	rak = (frame->flags & CANFD_RAK) != 0;
+
+	ret = tss463aa_hw_write(spi, channel_offset + 1,
+	                     (tss463aa_hw_read(spi, channel_offset + 1) &~ 1) |
+	                     (rtr ? 1 : 0) |
+	                     (rnw ? 2 : 0) |
+	                     (rak ? 4 : 0));
+	if (ret)
+		return ret;
+
+	/* Transmit */
+	ret = tss463aa_hw_write(spi, channel_offset + 3,
+	                        (tss463aa_hw_read(spi, channel_offset + 3) & 5) |
+                                (len1 << 3));
+	return ret;
+}
+
+/* Precondition: There is a message to be received already. */
+__attribute__((warn_unused_result))
+static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 *buf, u8 channel_offset)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+
+	u8 msgpointer = tss463aa_hw_read(priv->spi, channel_offset + 2) & 0x7F;
+	u8 msglen = tss463aa_hw_read(priv->spi, channel_offset + 3) >> 3;
+	u8 len = TSS463AA_RX_BUF_LEN - 2;
+	if (msglen <= len)
+		len = msglen;
+	else {
+		dev_warn(&spi->dev, "received message was too long - ignored.\n");
+		return -E2BIG;
+	}
+
+	priv->spi_tx_buf[0] = msgpointer;
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
+	memset(priv->spi_tx_buf + 2, 0, len);
+	return tss463aa_spi_trans(spi, TSS463AA_RX_BUF_LEN);
+	/* Note: status = priv->spi_rx_buf[2]; */
+}
+
+/* Precondition: There is a message to be received already. */
+__attribute__((warn_unused_result))
+static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	u8 buf[TSS463AA_RX_BUF_LEN - 2];
+	u16 id;
+	int ret;
+	struct sk_buff *skb;
+	struct canfd_frame *frame;
+
+	id = tss463aa_hw_read_id(spi, channel_offset);
+	ret = tss463aa_hw_rx_frame(spi, buf, channel_offset);
+	if (ret)
+		return ret;
+
+	u8 msglen = buf[0] & 0x1F;
+	u8 len = msglen - 1; /* FIXME: Test. */
+	if (len > CANFD_MAX_DLEN) {
+		dev_warn(&spi->dev, "received message was too long - ignored.\n");
+		return -E2BIG;
+	}
+	skb = alloc_canfd_skb(priv->net, &frame);
+	if (!skb) {
+		priv->net->stats.rx_dropped++;
+		return -ENOMEM;
+	}
+	memcpy(frame->data, buf + 1, frame->len); /* FIXME test */
+	frame->len = len;
+
+	if (buf[0] & 0x20)
+		frame->can_id |= CAN_RTR_FLAG;
+	if (buf[0] & 0x40)
+		frame->flags |= CANFD_RNW;
+	if (buf[0] & 0x80)
+		frame->flags |= CANFD_RAK;
+	/* Note: A combination RNW = 0 (write) && RTR = 1 will never happen (VAN standard). */
+
+	frame->can_id = id | CAN_EFF_FLAG; /* Note: CAN IDs have 29 bits. */
+
+	priv->net->stats.rx_packets++;
+	priv->net->stats.rx_bytes += frame->len;
+
+	can_led_event(priv->net, CAN_LED_EVENT_RX);
+
+	netif_rx_ni(skb);
+	return 0;
+}
+
+#define TSS463AA_LINE_CONTROL 0
+#define TSS463AA_LINE_CONTROL_IVRX 1
+#define TSS463AA_LINE_CONTROL_IVTX 2
+#define TSS463AA_LINE_CONTROL_PC 8
+#define TSS463AA_LINE_CONTROL_CD_SHIFT 4
+#define TSS463AA_LINE_CONTROL_CD_MASK 0xF0
+
+static const struct can_bittiming_const tss463aa_canfd_nominal_bittiming_const = {
+	.name = KBUILD_MODNAME,
+	/* FIXME fix those values: */
+	.tseg1_min = 1,
+	.tseg1_max = 1, /* FIXME */
+	.tseg2_min = 1,
+	.tseg2_max = 1, /* FIXME */
+	.sjw_max = 1, /* FIXME */
+	.brp_min = 1,
+	.brp_max = 192,
+	.brp_inc = 1,
+};
+
+/* Precondition: Device is down */
+__attribute__((warn_unused_result))
+static int tss463aa_set_bittiming(struct net_device *dev)
+{
+	struct tss463aa_priv *priv = netdev_priv(dev);
+	struct spi_device *spi = priv->spi;
+	struct can_bittiming* timing = &priv->can.bittiming;
+	__u32 CD;
+
+	netdev_dbg(dev, "set_bittiming!\n");
+	//timing->bitrate; /* bits/second */
+	/* TODO: One day, support fractional divisors */
+	/* Note: prop_seg = tseg1 / 2 */
+	/* Note: phase_seg1 = tseg1 - prop_seg */
+	/* Note: phase_seg2 = tseg2 */
+#if 0
+	if (timing->prop_seg + timing->phase_seg1 + timing->phase_seg2 + 1 != 16) {
+		netdev_err(dev, "%s: Sum of all the timings has to be 16 TQ.\n", __func__);
+		return -EINVAL;
+	}
+#endif
+	if (timing->prop_seg*2 + timing->phase_seg2 + 1 != 16) {
+		netdev_err(dev, "%s: Sum of the timings has to be 16 TQ.\n", __func__);
+		return -EINVAL;
+	}
+
+	CD = ilog2(timing->brp);
+	if (CD >= 8 || (1 << CD) != timing->brp)
+		return -EINVAL;
+
+	return tss463aa_hw_write(spi, TSS463AA_LINE_CONTROL,
+	                         (tss463aa_hw_read(spi, TSS463AA_LINE_CONTROL) &~
+	                          TSS463AA_LINE_CONTROL_CD_MASK) |
+	                         (CD << TSS463AA_LINE_CONTROL_CD_SHIFT));
+}
+
+#define TSS463AA_TRANSMISSION_CONTROL 1
+#define TSS463AA_TRANSMISSION_CONTROL_MT 1
+#define TSS463AA_TRANSMISSION_CONTROL_VER_SHIFT 1
+#define TSS463AA_TRANSMISSION_CONTROL_VER_MASK 14
+#define TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT 4
+#define TSS463AA_TRANSMISSION_CONTROL_MR_MASK 112
+
+#define TSS463AA_DIAGNOSTIC_CONTROL 2
+#define TSS463AA_DIAGNOSTIC_CONTROL_ESDC 1
+#define TSS463AA_DIAGNOSTIC_CONTROL_ETIP 2
+#define TSS463AA_DIAGNOSTIC_CONTROL_M_SHIFT 2
+#define TSS463AA_DIAGNOSTIC_CONTROL_M_MASK 12
+#define TSS463AA_DIAGNOSTIC_CONTROL_SDC_SHIFT 4
+#define TSS463AA_DIAGNOSTIC_CONTROL_SDC_MASK 240
+
+/* Precondition: TX not busy. */
+__attribute__((warn_unused_result))
+static netdev_tx_t tss463aa_hard_start_xmit(struct sk_buff *skb, struct net_device *net)
+{
+	struct tss463aa_priv *priv = netdev_priv(net);
+	struct spi_device *spi = priv->spi;
+
+	if (priv->tx_skb || priv->tx_len) {
+		dev_err(&spi->dev, "hard_xmit called while tx busy\n");
+		return NETDEV_TX_BUSY;
+	}
+
+	if (can_dropped_invalid_skb(net, skb))
+		return NETDEV_TX_OK;
+
+	netif_stop_queue(net);
+	priv->tx_skb = skb;
+	queue_work(priv->wq, &priv->tx_work);
+
+	return NETDEV_TX_OK;
+}
+
+__attribute__((warn_unused_result))
+static int tss463aa_set_mode(struct net_device *net, enum can_mode mode)
+{
+	struct tss463aa_priv *priv = netdev_priv(net);
+
+	switch (mode) {
+	case CAN_MODE_START:
+		tss463aa_clean(net);
+		/* We have to delay work since SPI I/O may sleep */
+		priv->can.state = CAN_STATE_ERROR_ACTIVE;
+		priv->restart_tx = 1;
+		if (priv->can.restart_ms == 0)
+			priv->after_suspend = TSS463AA_AFTER_SUSPEND_RESTART;
+		queue_work(priv->wq, &priv->restart_work);
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
+#define TSS463AA_INTE 0x0A
+#define TSS463AA_INTE_TXERR 16
+#define TSS463AA_INTE_TXOK 8
+#define TSS463AA_INTE_RXERR 4
+#define TSS463AA_INTE_RXOK 2
+#define TSS463AA_INTE_RXNOK 1 /* with no RAK */
+
+#define TSS463AA_LINE_STATUS 4
+#define TSS463AA_LINE_STATUS_RXG 1 /* receiving */
+#define TSS463AA_LINE_STATUS_TXG 2 /* transmitting */
+#define TSS463AA_LINE_STATUS_SBA_SHIFT 2
+#define TSS463AA_LINE_STATUS_SBA_MASK 12
+#define TSS463AA_LINE_STATUS_SC 16 /* error anywhen mark */
+#define TSS463AA_LINE_STATUS_IDG 32 /* idling */
+#define TSS463AA_LINE_STATUS_SPG 64 /* sleeping */
+
+#define TSS463AA_INTERRUPT_STATUS 9
+#define TSS463AA_INTERRUPT_STATUS_MASK 0x9f
+#define TSS463AA_INTERRUPT_STATUS_RNOK 1 /* reception without ACK OK */
+#define TSS463AA_INTERRUPT_STATUS_ROK 2 /* reception OK */
+#define TSS463AA_INTERRUPT_STATUS_RE 4 /* reception error */
+#define TSS463AA_INTERRUPT_STATUS_TOK 8 /* transmission OK */
+#define TSS463AA_INTERRUPT_STATUS_TE 16 /* transmission error */
+#define TSS463AA_INTERRUPT_STATUS_RST 128 /* reset */
+
+#define TSS463AA_INTERRUPT_RESET 0x0b
+#define TSS463AA_INTERRUPT_RESET_MASK 0x9f
+
+__attribute__((warn_unused_result))
+static int tss463aa_activate(struct spi_device *spi)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	int ret;
+
+	ret = tss463aa_hw_write(spi, TSS463AA_INTE, TSS463AA_INTE_TXERR |
+		                     TSS463AA_INTE_TXERR | TSS463AA_INTE_TXOK |
+		                     TSS463AA_INTE_RXERR | TSS463AA_INTE_RXOK |
+		                     TSS463AA_INTE_RXNOK);
+	if (ret)
+		return ret;
+
+	/* Start transmitting/receiving on the VAN bus */
+	ret = tss463aa_hw_write(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_ACTIVATE);
+	if (ret)
+		return ret;
+
+	priv->can.state = CAN_STATE_ERROR_ACTIVE;
+	return 0;
+}
+
+#define TSS463AA_CHANNELDRAK 0x80
+
+__attribute__((warn_unused_result))
+static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, u8 CHTx, u8 CHRx, u8 msgpointer, u8 msglen, u8 ext, u8 rak, u8 rnw, u8 rtr, u8 drak)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+
+	priv->spi_tx_buf[0] = offset;
+	priv->spi_tx_buf[1] = 0xE0; /* write register */
+	priv->spi_tx_buf[2] = idtag >> 4;
+	priv->spi_tx_buf[3] = (idtag << 4) | (ext ? 8 : 0) | (rak ? 4 : 0) | (rnw ? 2 : 0) | (rtr ? 1 : 0); /* ID tag / command */
+	priv->spi_tx_buf[4] = (drak ? TSS463AA_CHANNELDRAK : 0) | msgpointer;
+	priv->spi_tx_buf[5] = (CHTx ? 2 : 0) | (CHRx ? 1 : 0) | (msglen << 3); /* Note: Clears error, too. */
+	if (tss463aa_spi_trans(spi, 6))
+		return -EIO;
+	priv->spi_tx_buf[0] = offset + 6;
+	priv->spi_tx_buf[1] = 0xE0; /* write register */
+	priv->spi_tx_buf[2] = idmask >> 4;
+	priv->spi_tx_buf[3] = idmask << 4;
+	if (tss463aa_spi_trans(spi, 4))
+		return -EIO;
+	return 0;
+}
+
+/* Given a DT node and channel number, sets up the TSS463AA accordingly (also taking into account CAN).
+Precondition: Device is not up. */
+__attribute__((warn_unused_result))
+static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 channel, struct device_node *dt_node)
+{
+	struct spi_device *spi = priv->spi;
+	if (channel >= TSS463AA_CHANNEL_COUNT) {
+		return -EPERM;
+	}
+	if (dt_node && of_device_is_available(dt_node)) {
+		u8 msgpointer = 0;
+		u8 msglen = 0;
+		u16 idtag = 0;
+		u16 idmask = 0xFFF;
+
+		u8 drak = of_property_read_bool(dt_node, "tss463aa,disable-ack-request");
+		u8 receiver = of_property_read_bool(dt_node, "tss463aa,receiver");
+		u8 transmitter = of_property_read_bool(dt_node, "tss463aa,transmitter");
+		u8 CHRx = !receiver;
+		u8 CHTx = !transmitter;
+
+		u32 msgtype;
+
+		u8 ext = !of_property_read_bool(dt_node, "tss463aa,disable-recessive-ext");
+		u8 rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
+		/*
+		RNW RTR CHTx CHRx Meaning
+		0   0   0    ?    Transmit Message
+		0   1   ?    0    Receive Message
+		1   1   0    0    Reply Request
+		1   0   0    0    Immediate Reply Message [transmit in-frame reply]
+		1   0   0    1    Deferred reply [transmits immediately] [TODO]
+		1   0   1    0    Reply request detector probe [TODO]
+
+		?   ?   1    1    Inactive
+		*/
+		u8 rnw = receiver && transmitter;
+		u8 rtr = receiver; /* FIXME: Should be: rtr=1: frame contains no data.  Also, the CAN Linux interface contains an RTR flag in id already! */
+
+		if (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY)
+			drak = 1;
+
+		if (of_property_read_u32(dt_node, "tss463aa,msgtype", &msgtype) == 0) {
+			rnw = (msgtype & 8) != 0;
+			rtr = (msgtype & 4) != 0;
+			CHTx = (msgtype & 2) != 0;
+			CHRx = (msgtype & 1) != 0;
+		}
+
+		if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
+			dev_err(&spi->dev, "channel %u: missing 'tss463aa,msgpointer' in devicetree.\n", channel);
+			return -EINVAL;
+		}
+		if (msgpointer > 127) {
+			dev_err(&spi->dev, "channel %u: invalid 'tss463aa,msgpointer' in devicetree.\n", channel);
+			return -EINVAL;
+		}
+		if (of_property_read_u8(dt_node, "tss463aa,msglen", &msglen)) {
+			dev_err(&spi->dev, "channel %u: missing 'tss463aa,msglen' in devicetree.\n", channel);
+			return -EINVAL;
+		}
+		if (msglen >= 32 || msglen >= TSS463AA_RX_BUF_LEN || msglen >= TSS463AA_TX_BUF_LEN) { /* FIXME: Fix one-off ? */
+			dev_err(&spi->dev, "channel %u: invalid 'tss463aa,msglen' in devicetree.\n", channel);
+			return -EINVAL;
+		}
+
+		if (of_property_read_u16(dt_node, "tss463aa,idtag", &idtag)) {
+			dev_err(&spi->dev, "channel %u: missing 'tss463aa,idtag' in devicetree.\n", channel);
+			return -EINVAL;
+		}
+		if (idmask > 0xFFF) {
+			dev_err(&spi->dev, "channel %u: invalid 'tss463aa,idtag' in devicetree.\n", channel);
+			return -EINVAL;
+		}
+		if (of_property_read_u16(dt_node, "tss463aa,idmask", &idmask)) {
+			dev_err(&spi->dev, "channel %u: missing 'tss463aa,idmask' in devicetree.\n", channel);
+			return -EINVAL;
+		}
+		if (idmask > 0xFFF) {
+			dev_err(&spi->dev, "channel %u: invalid 'tss463aa,idmask' in devicetree.\n", channel);
+			return -EINVAL;
+		}
+
+		return tss463aa_set_channel_up(spi, TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_SIZE * channel, idtag, idmask, CHTx, CHRx, msgpointer, msglen, ext, rak, rnw, rtr, drak);
+	}
+	return 0;
+}
+
+/* Given a DT node, sets up the TSS463AA accordingly.
+Precondition: Device is not up. */
+__attribute__((warn_unused_result))
+static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *dt_node)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	__u8 transmission_retry_count = 0;
+	__u32 M;
+	int ret;
+
+	/* Set up Line Control settings */
+
+	ret = tss463aa_hw_write(spi, TSS463AA_LINE_CONTROL,
+	                     (tss463aa_hw_read(spi, TSS463AA_LINE_CONTROL) &~
+	                      (TSS463AA_LINE_CONTROL_IVRX |
+	                       TSS463AA_LINE_CONTROL_IVTX |
+	                       TSS463AA_LINE_CONTROL_PC)) |
+	                     (of_property_read_bool(dt_node, "tss463aa,inverted-rx") ?
+	                      TSS463AA_LINE_CONTROL_IVRX : 0) |
+	                     (of_property_read_bool(dt_node, "tss463aa,invert-tx") ?
+	                      TSS463AA_LINE_CONTROL_IVTX : 0) |
+	                     (of_property_read_bool(dt_node, "tss463aa,pulse-coded-modulation") ?
+	                      TSS463AA_LINE_CONTROL_PC : 0));
+	if (ret)
+		return ret;
+
+	/* Set up Transmission Control settings */
+
+	of_property_read_u8(dt_node, "tss463aa,transmission-retry-count", &transmission_retry_count);
+	if (transmission_retry_count > (TSS463AA_TRANSMISSION_CONTROL_MR_MASK >> TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT)) {
+		dev_warn(&spi->dev, "Value for 'transmission retry count' is invalid. Clamping.\n");
+		transmission_retry_count = TSS463AA_TRANSMISSION_CONTROL_MR_MASK >> TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT;
+	}
+	ret = tss463aa_hw_write(spi, TSS463AA_TRANSMISSION_CONTROL,
+	                     (tss463aa_hw_read(spi, TSS463AA_TRANSMISSION_CONTROL) &~
+	                      (TSS463AA_TRANSMISSION_CONTROL_MT |
+	                       TSS463AA_TRANSMISSION_CONTROL_MR_MASK)) |
+	                     (of_property_read_bool(dt_node, "tss463aa,autonomous") ?
+	                      TSS463AA_TRANSMISSION_CONTROL_MT : 0) |
+	                     (transmission_retry_count << TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT));
+	if (ret)
+		return ret;
+
+	/* Set up Diagnostic Control settings */
+
+	/* TODO: Maybe allow SDC to be set?  Probably very opaque to the user. */
+
+	if (of_property_read_u32(dt_node, "tss463aa,diagnosis-mode", &M))
+		M = 3; /* automatic selection */
+	if (M > 3) {
+		dev_warn(&spi->dev, "Value of 'tss463aa,diagnosis-mode' is invalid. Clamping.\n");
+		return -EINVAL;
+	}
+
+	ret = tss463aa_hw_write(spi, TSS463AA_DIAGNOSTIC_CONTROL,
+	                     (tss463aa_hw_read(spi, TSS463AA_DIAGNOSTIC_CONTROL) &~
+	                      (TSS463AA_DIAGNOSTIC_CONTROL_ESDC |
+	                       TSS463AA_DIAGNOSTIC_CONTROL_ETIP |
+	                       TSS463AA_DIAGNOSTIC_CONTROL_M_MASK)) |
+	                     (of_property_read_bool(dt_node, "tss463aa,enable-system-diagnosis") ?
+	                      TSS463AA_DIAGNOSTIC_CONTROL_ESDC : 0) |
+	                     (of_property_read_bool(dt_node, "tss463aa,enable-transmission-diagnosis") ?
+	                      TSS463AA_DIAGNOSTIC_CONTROL_ETIP : 0) |
+	                     (M << TSS463AA_DIAGNOSTIC_CONTROL_M_SHIFT));
+	if (ret)
+		return ret;
+
+	/* Set up channels */
+
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel0"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel1"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel2"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel3"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel4"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel5"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel6"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel7"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel8"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel9"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel10"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel11"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel12"));
+	if (ret)
+		return ret;
+	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel13"));
+	return ret;
+}
+
+
+__attribute__((warn_unused_result))
+static int tss463aa_setup(struct tss463aa_priv *priv)
+{
+	struct spi_device *spi = priv->spi;
+	u8 channel_offset;
+	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
+		int ret = tss463aa_hw_write(spi, channel_offset + 3, 7); /* Set CHER, CHTx, CHRx */
+		if (ret)
+			return ret;
+	}
+	return tss463aa_set_up_from_dt(spi, spi->dev.of_node);
+}
+
+__attribute__((warn_unused_result))
+static int tss463aa_power_enable(struct spi_device *spi, struct regulator *reg, int enable)
+{
+	if (IS_ERR_OR_NULL(reg))
+		return 0;
+
+	if (enable) {
+		int ret = regulator_enable(reg);
+		dev_err(&spi->dev, "could not enable chip power.\n");
+		return ret;
+	} else {
+		int ret = regulator_disable(reg);
+		dev_err(&spi->dev, "could not disable chip power.\n");
+		return ret;
+	}
+}
+
+__attribute__((warn_unused_result))
+static int tss463aa_stop(struct net_device *net)
+{
+	struct tss463aa_priv *priv = netdev_priv(net);
+	struct spi_device *spi = priv->spi;
+	int ret;
+
+	close_candev(net);
+
+	priv->force_quit = 1;
+	free_irq(spi->irq, priv);
+	destroy_workqueue(priv->wq);
+	priv->wq = NULL;
+
+	mutex_lock(&priv->tss463aa_lock);
+
+	/* Disable transmission&reception, disable interrupts and clear flags. */
+	ret = tss463aa_hw_write(spi, TSS463AA_CHANNEL0_OFFSET + 3, 3); /* Note: Buffer length is killed */
+	if (ret)
+		netdev_err(net, "could not stop.\n");
+	ret = tss463aa_hw_write(spi, TSS463AA_INTE, 0x0);
+	if (ret)
+		netdev_err(net, "could not stop.\n");
+	ret = tss463aa_hw_write(spi, TSS463AA_INTERRUPT_RESET, TSS463AA_INTERRUPT_RESET_MASK);
+	if (ret)
+		netdev_err(net, "could not stop.\n");
+
+	tss463aa_clean(net);
+
+	tss463aa_hw_sleep(spi);
+
+	priv->can.state = CAN_STATE_STOPPED;
+
+	mutex_unlock(&priv->tss463aa_lock);
+
+	can_led_event(net, CAN_LED_EVENT_STOP);
+
+	return 0;
+}
+
+static void tss463aa_tx_work_handler(struct work_struct *ws)
+{
+	struct tss463aa_priv *priv = container_of(ws, struct tss463aa_priv, tx_work);
+	struct spi_device *spi = priv->spi;
+	struct net_device *net = priv->net;
+	struct canfd_frame *frame;
+
+	mutex_lock(&priv->tss463aa_lock);
+	if (priv->tx_skb) {
+		if (priv->can.state == CAN_STATE_BUS_OFF) {
+			tss463aa_clean(net);
+		} else {
+			frame = (struct canfd_frame *)priv->tx_skb->data;
+			/* FIXME: Check for errors */
+			tss463aa_hw_tx(spi, frame);
+			priv->tx_len = 1 + frame->len; /* FIXME */
+			can_put_echo_skb(priv->tx_skb, net, 0);
+			priv->tx_skb = NULL;
+		}
+	}
+	mutex_unlock(&priv->tss463aa_lock);
+}
+
+static void tss463aa_restart_work_handler(struct work_struct *ws)
+{
+	struct tss463aa_priv *priv = container_of(ws, struct tss463aa_priv,
+						restart_work);
+	struct spi_device *spi = priv->spi;
+	struct net_device *net = priv->net;
+
+	mutex_lock(&priv->tss463aa_lock);
+	if (priv->after_suspend) {
+		/* FIXME: Check for errors */
+		tss463aa_hw_reset(spi); /* wake it up */
+		tss463aa_setup(priv);
+		if (priv->after_suspend & TSS463AA_AFTER_SUSPEND_RESTART) {
+			tss463aa_activate(spi);
+		} else if (priv->after_suspend & TSS463AA_AFTER_SUSPEND_UP) {
+			netif_device_attach(net);
+			tss463aa_clean(net);
+			tss463aa_activate(spi);
+			netif_wake_queue(net);
+		} else {
+			tss463aa_hw_sleep(spi);
+		}
+		priv->after_suspend = 0;
+		priv->force_quit = 0;
+	}
+
+	if (priv->restart_tx) {
+		priv->restart_tx = 0;
+		/* FIXME: Check for errors */
+		tss463aa_hw_reset(spi);
+		tss463aa_setup(priv);
+		tss463aa_clean(net);
+		tss463aa_activate(spi);
+		netif_wake_queue(net);
+	}
+	mutex_unlock(&priv->tss463aa_lock);
+}
+
+#define TSS463AA_LAST_ERROR 7
+#define TSS463AA_LAST_ERROR_BOC 0x40 /* RX: Buffer occupied */
+#define TSS463AA_LAST_ERROR_BOV 0x20 /* RX: Buffer overflow */
+#define TSS463AA_LAST_ERROR_FCSE 0x08 /* RX: Frame check sequence error */
+#define TSS463AA_LAST_ERROR_ACKE 0x04 /* TX: Collision on ACK */
+#define TSS463AA_LAST_ERROR_CV 0x02 /* RX: Manchester code violation or a physical violation */
+#define TSS463AA_LAST_ERROR_FV 0x01 /* RX: Collision on ACK */
+
+#define TSS463AA_TRANSMISSION_STATUS 5
+#define TSS463AA_TRANSMISSION_STATUS_NRT_MASK 0xF0
+#define TSS463AA_TRANSMISSION_STATUS_NRT_SHIFT 4
+#define TSS463AA_TRANSMISSION_STATUS_IDT_MASK 0x0F
+#define TSS463AA_TRANSMISSION_STATUS_IDT_SHIFT 4
+
+/* Note: Updates CF in place. */
+static void tss463aa_update_can_error(struct tss463aa_priv *priv, struct can_frame *cf, int transmission)
+{
+	struct spi_device *spi = priv->spi;
+	u8 last_error = tss463aa_hw_read(spi, TSS463AA_LAST_ERROR);
+	if (last_error & TSS463AA_LAST_ERROR_BOV) {
+		cf->can_id |= CAN_ERR_CRTL;
+		cf->data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
+	}
+	if (last_error & TSS463AA_LAST_ERROR_FCSE) {
+		cf->can_id |= CAN_ERR_PROT;
+		cf->data[2] = CAN_ERR_PROT_FORM;
+	}
+	if (last_error & TSS463AA_LAST_ERROR_ACKE) {
+		cf->can_id |= CAN_ERR_PROT;
+		cf->data[2] |= CAN_ERR_PROT_FORM|CAN_ERR_PROT_TX;
+		cf->data[3] = CAN_ERR_PROT_LOC_ACK;
+	}
+	if (last_error & TSS463AA_LAST_ERROR_FV) {
+		cf->can_id |= CAN_ERR_PROT;
+		cf->data[2] |= CAN_ERR_PROT_FORM;
+		cf->data[3] = CAN_ERR_PROT_LOC_ACK;
+	}
+	if (last_error & TSS463AA_LAST_ERROR_CV) {
+		cf->can_id |= CAN_ERR_PROT;
+		cf->data[2] |= CAN_ERR_PROT_FORM;
+		cf->data[3] = CAN_ERR_PROT_LOC_ACK;
+	}
+
+	if (transmission) {
+		u8 transmission_status = tss463aa_hw_read(spi, TSS463AA_TRANSMISSION_STATUS);
+		u8 idt = ((transmission_status & TSS463AA_TRANSMISSION_STATUS_IDT_MASK) >> TSS463AA_TRANSMISSION_STATUS_IDT_SHIFT);
+		u8 nrt = ((transmission_status & TSS463AA_TRANSMISSION_STATUS_NRT_MASK) >> TSS463AA_TRANSMISSION_STATUS_NRT_SHIFT);
+		/* FIXME: Check whether this still works when TE is asserted! */		cf->data[5] = idt; /* controller specific */
+		cf->data[6] = nrt; /* controller specific */
+	}
+
+	/* TODO: CAN_STATE_ERROR_WARNING if degraded */
+	/* TODO: Bus error
+	priv->can.can_stats.bus_error++;
+	stats->rx_errors++;
+	cf->can_id |= CAN_ERR_PROT | CAN_ERR_BUSERROR;
+	cf->data[2] |= CAN_ERR_PROT_BIT;
+	cf->data[2] |= CAN_ERR_PROT_FORM;
+	cf->data[2] |= CAN_ERR_PROT_STUFF;
+	cf->data[3] = ecc & ECC_SEG; error location
+	cf->data[2] |= CAN_ERR_PROT_TX; error during transmission
+	*/
+	/* TODO: Arbitrarion lost
+	priv->can.can_stats.arbitration_lost++;
+	stats->tx_errors++;
+	cf->can_id |= CAN_ERR_LOSTARB;
+	cf->data[0] = alc & 0x1f;
+	*/
+}
+
+static void tss463aa_can_error(struct tss463aa_priv *priv, int transmission)
+{
+	struct sk_buff *skb;
+	struct can_frame *cf;
+	struct net_device *net = priv->net;
+	skb = alloc_can_err_skb(net, &cf);
+	if (!skb) {
+		netdev_err(priv->net, "could not allocate CAN error frame.\n");
+		return;
+	}
+
+	tss463aa_update_can_error(priv, cf, transmission);
+
+	netif_rx_ni(skb);
+}
+
+static void tss463aa_update_can_state(struct tss463aa_priv *priv, enum can_state new_state) {
+	struct net_device *net = priv->net;
+
+	struct can_frame *cf;
+	struct sk_buff *skb;
+	enum can_state rx_state, tx_state;
+	u8 rxerr, txerr;
+
+	skb = alloc_can_err_skb(net, &cf);
+	if (!skb)
+		return;
+
+	txerr = 1; /* FIXME */
+	rxerr = 1; /* FIXME */
+	cf->data[6] = txerr;
+	cf->data[7] = rxerr;
+	tx_state = new_state;
+	rx_state = new_state;
+	can_change_state(net, cf, tx_state, rx_state);
+	netif_rx_ni(skb);
+}
+
+/* Note: Runs in its own thread */
+static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
+{
+	struct tss463aa_priv *priv = dev_id;
+	struct spi_device *spi = priv->spi;
+	struct net_device *net = priv->net;
+	u8 intf;
+	u8 line_status;
+	u8 channel_offset;
+
+	mutex_lock(&priv->tss463aa_lock);
+
+	intf = tss463aa_hw_read(spi, TSS463AA_INTERRUPT_STATUS) & TSS463AA_INTERRUPT_STATUS_MASK;
+	if (!intf)
+		return IRQ_NONE;
+
+	while (!priv->force_quit) {
+		enum can_state new_state;
+
+		intf = tss463aa_hw_read(spi, TSS463AA_INTERRUPT_STATUS) & TSS463AA_INTERRUPT_STATUS_MASK;
+		tss463aa_hw_write(spi, TSS463AA_INTERRUPT_RESET, TSS463AA_INTERRUPT_RESET_MASK); /* clear pending interrupt */
+
+		/* There's no interrupt for line_status, so take what we can get. */
+
+		line_status = tss463aa_hw_read(spi, TSS463AA_LINE_STATUS);
+
+		/* Update CAN state */
+		if ((line_status & TSS463AA_LINE_STATUS_SBA_MASK) == TSS463AA_LINE_STATUS_SBA_MASK) /* Major error */
+			new_state = CAN_STATE_BUS_OFF;
+		else
+			new_state = CAN_STATE_ERROR_ACTIVE;
+		//	new_state = CAN_STATE_ERROR_PASSIVE;
+		//	new_state = CAN_STATE_ERROR_WARNING;
+
+		if (new_state != priv->can.state) {
+			tss463aa_update_can_state(priv, new_state);
+			if (new_state == CAN_STATE_BUS_OFF) {
+				can_bus_off(net);
+				if (priv->can.restart_ms == 0) {
+					priv->force_quit = 1;
+					tss463aa_hw_sleep(spi);
+					break;
+				}
+			}
+		}
+
+		if (intf == 0)
+			break;
+
+		if (intf & TSS463AA_INTERRUPT_STATUS_RST)
+			dev_dbg(&spi->dev, "chip reset happened.\n");
+		if (intf & (TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK | TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE))
+			for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
+				u8 channel_status = tss463aa_hw_read(spi, channel_offset + 3);
+				if (channel_status & 1) { /* RX occupied */
+					// TODO: Check TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK ?
+					tss463aa_hw_rx(spi, channel_offset);
+					tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 1);
+				}
+				if (channel_status & 2) { /* TX free */
+					/* Check whether there's more to send */
+					if (priv->tx_len) {
+						net->stats.tx_packets++;
+						net->stats.tx_bytes += priv->tx_len - 1;
+						can_led_event(net, CAN_LED_EVENT_TX);
+						if (priv->tx_len) {
+							can_get_echo_skb(net, 0);
+							priv->tx_len = 0;
+						}
+						netif_wake_queue(net);
+					}
+				}
+				if (channel_status & 4) { /* CHER */
+					int ret;
+					/* TODO: Get error (if possible) */
+					dev_warn(&spi->dev, "channel with offset %u logged an error. Clearing it.\n", channel_offset);
+					ret = tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 4);
+					if (ret)
+						dev_err(&spi->dev, "could not clear error.\n");
+				}
+			}
+
+		if (intf & (TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE)) {
+			if (intf & TSS463AA_INTERRUPT_STATUS_TOK) {
+				net->stats.tx_packets++;
+				net->stats.tx_bytes += priv->tx_len - 1;
+				if (priv->tx_len) { /* FIXME: Check condition */
+					can_get_echo_skb(net, 0);
+					priv->tx_len = 0;
+				}
+			} else {
+				net->stats.tx_errors++;
+			}
+			netif_wake_queue(net);
+			can_led_event(net, CAN_LED_EVENT_TX);
+		}
+		if (intf & (TSS463AA_INTERRUPT_STATUS_TE | TSS463AA_INTERRUPT_STATUS_RE))
+			tss463aa_can_error(priv, intf & TSS463AA_INTERRUPT_STATUS_TE);
+	}
+	mutex_unlock(&priv->tss463aa_lock);
+	return IRQ_HANDLED;
+}
+
+__attribute__((warn_unused_result))
+static int tss463aa_open(struct net_device *net)
+{
+	struct tss463aa_priv *priv = netdev_priv(net);
+	struct spi_device *spi = priv->spi;
+	unsigned long flags = IRQF_ONESHOT | IRQF_TRIGGER_FALLING; /* FIXME */
+	int ret;
+
+	ret = open_candev(net);
+	if (ret)
+		return ret;
+
+	mutex_lock(&priv->tss463aa_lock);
+
+	priv->force_quit = 0;
+	priv->tx_skb = NULL;
+	priv->tx_len = 0;
+
+	ret = request_threaded_irq(spi->irq, NULL, tss463aa_can_ist,
+				   flags, KBUILD_MODNAME, priv);
+	if (ret) {
+		dev_err(&spi->dev, "failed to acquire irq %d\n", spi->irq);
+		goto out_close;
+	}
+
+	priv->wq = alloc_workqueue("tss463aa_wq", WQ_FREEZABLE | WQ_MEM_RECLAIM, 0);
+	if (!priv->wq) {
+		ret = -ENOMEM;
+		goto out_free_irq;
+	}
+	INIT_WORK(&priv->tx_work, tss463aa_tx_work_handler);
+	INIT_WORK(&priv->restart_work, tss463aa_restart_work_handler);
+
+	ret = tss463aa_hw_reset(spi);
+	if (ret)
+		goto out_free_wq;
+
+	ret = tss463aa_setup(priv);
+	if (ret)
+		goto out_free_wq;
+
+	ret = tss463aa_activate(spi);
+	if (ret)
+		goto out_free_wq;
+
+	can_led_event(net, CAN_LED_EVENT_OPEN);
+	netif_wake_queue(net);
+	mutex_unlock(&priv->tss463aa_lock);
+
+	return 0;
+
+ out_free_wq:
+	destroy_workqueue(priv->wq);
+ out_free_irq:
+	free_irq(spi->irq, priv);
+	tss463aa_hw_sleep(spi);
+ out_close:
+	close_candev(net);
+	mutex_unlock(&priv->tss463aa_lock);
+	return ret;
+}
+
+static void tss463aa_get_stats64(struct net_device *net, struct rtnl_link_stats64 *stats) {
+	netdev_stats_to_stats64(stats, &net->stats);
+}
+
+static const struct net_device_ops tss463aa_netdev_ops = {
+	.ndo_open = tss463aa_open,
+	.ndo_stop = tss463aa_stop,
+	.ndo_start_xmit = tss463aa_hard_start_xmit,
+	.ndo_get_stats64 = tss463aa_get_stats64,
+};
+
+static const struct of_device_id tss463aa_of_match[] = {
+	{
+		.compatible	= "atmel,tss463aa",
+		.data		= (void *)CAN_TSS463AA_TSS463AA,
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(of, tss463aa_of_match);
+
+static const struct spi_device_id tss463aa_id_table[] = {
+	{
+		.name		= "tss463aa",
+		.driver_data	= (kernel_ulong_t)CAN_TSS463AA_TSS463AA,
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(spi, tss463aa_id_table);
+
+static int tss463aa_can_probe(struct spi_device *spi)
+{
+	struct device_node *dt_node = spi->dev.of_node;
+	const struct of_device_id *of_id;
+	struct net_device *net;
+	struct tss463aa_priv *priv;
+	struct clk *clk;
+	unsigned long freq;
+	int ret;
+
+	if (!dt_node) {
+		dev_err(&spi->dev, "Missing device tree node.\n");
+		return -EINVAL;
+	}
+	of_id = of_match_node(tss463aa_of_match, dt_node); /* FIXME: Or of_match_device(tss463aa_of_match, &spi->dev);*/
+	/* FIXME do that differently? For example read property xtal-clock-frequency */
+	clk = devm_clk_get(&spi->dev, NULL);
+	if (IS_ERR(clk)) {
+		dev_err(&spi->dev, "no chip clock source defined\n");
+		return PTR_ERR(clk);
+	}
+	freq = clk_get_rate(clk);
+	if (freq < 4000) {
+		dev_err(&spi->dev, "XTAL clock frequency is so low we can't calibrate our delays anymore.\n");
+		return -EPERM;
+	}
+	/* of_property_read_u32(dt_node, "xtal-clock-frequency",
+	                        &priv->xtal_clock_frequency); */
+
+	/* Sanity check */
+	if (freq > 8000000)
+		return -ERANGE;
+
+	/* Allocate can/net device */
+	net = alloc_candev(sizeof(struct tss463aa_priv), TSS463AA_TX_ECHO_SKB_MAX); /* FIXME */
+	if (!net)
+		return -ENOMEM;
+
+	ret = clk_prepare_enable(clk);
+	if (ret)
+		goto out_free;
+
+	net->netdev_ops = &tss463aa_netdev_ops;
+	net->flags |= IFF_ECHO;
+
+	priv = netdev_priv(net);
+	priv->reset = devm_gpiod_get_optional(&spi->dev, "reset", GPIOD_OUT_HIGH);
+	priv->xtal_clock_frequency = freq;
+	priv->can.state = CAN_STATE_STOPPED;
+	priv->can.bittiming_const = &tss463aa_canfd_nominal_bittiming_const;
+	priv->can.do_set_bittiming = tss463aa_set_bittiming;
+	/* priv->can.do_set_data_bittiming */
+	priv->can.do_set_mode = tss463aa_set_mode;
+	priv->can.clock.freq = freq /* / 16*/; /* Note: TS/s */
+	priv->can.ctrlmode_supported = CAN_CTRLMODE_LISTENONLY | CAN_CTRLMODE_FD;
+
+	if (of_id)
+		priv->model = (enum tss463aa_model)of_id->data;
+	else
+		priv->model = spi_get_device_id(spi)->driver_data;
+	priv->net = net;
+	priv->clk = clk;
+
+	spi_set_drvdata(spi, priv);
+
+	/* Configure the SPI bus */
+	spi->bits_per_word = 8;
+	ret = spi_setup(spi);
+	if (ret)
+		goto out_clk;
+
+	priv->power = devm_regulator_get_optional(&spi->dev, "vdd");
+	if (PTR_ERR(priv->power) == -EPROBE_DEFER) {
+		ret = -EPROBE_DEFER;
+		goto out_clk;
+	}
+
+	ret = tss463aa_power_enable(spi, priv->power, 1);
+	if (ret)
+		goto out_clk;
+
+	priv->spi = spi;
+	mutex_init(&priv->tss463aa_lock);
+
+	/* If requested, allocate DMA buffers */
+	if (tss463aa_enable_dma) {
+		spi->dev.coherent_dma_mask = ~0;
+
+		/* Minimum coherent DMA allocation is PAGE_SIZE, so allocate
+		 * that much and share it between Tx and Rx DMA buffers.
+		 */
+		priv->spi_tx_buf = dmam_alloc_coherent(&spi->dev,
+						       PAGE_SIZE,
+						       &priv->spi_tx_dma,
+						       GFP_DMA);
+
+		if (priv->spi_tx_buf) {
+			priv->spi_rx_buf = (priv->spi_tx_buf + (PAGE_SIZE / 2));
+			priv->spi_rx_dma = (dma_addr_t)(priv->spi_tx_dma +
+							(PAGE_SIZE / 2));
+		} else {
+			/* Fall back to non-DMA */
+			tss463aa_enable_dma = 0;
+		}
+	}
+
+	/* Allocate non-DMA buffers */
+	if (!tss463aa_enable_dma) {
+		priv->spi_tx_buf = devm_kzalloc(&spi->dev, TSS463AA_TX_BUF_LEN,
+						GFP_KERNEL);
+		if (!priv->spi_tx_buf) {
+			ret = -ENOMEM;
+			goto error_probe;
+		}
+		priv->spi_rx_buf = devm_kzalloc(&spi->dev, TSS463AA_RX_BUF_LEN,
+						GFP_KERNEL);
+
+		if (!priv->spi_rx_buf) {
+			ret = -ENOMEM;
+			goto error_probe;
+		}
+	}
+
+	SET_NETDEV_DEV(net, &spi->dev);
+
+	ret = tss463aa_hw_probe(spi);
+	if (ret) {
+		if (ret == -ENODEV)
+			dev_err(&spi->dev, "Cannot initialize %x. Wrong wiring?\n",
+				priv->model);
+		goto error_probe;
+	}
+
+	ret = register_candev(net);
+	if (ret)
+		goto error_probe;
+
+	devm_can_led_init(net);
+	netdev_info(net, "%x successfully initialized.\n", priv->model);
+
+	return 0;
+
+ error_probe:
+	tss463aa_power_enable(spi, priv->power, 0);
+
+ out_clk:
+	if (!IS_ERR(clk))
+		clk_disable_unprepare(clk);
+
+ out_free:
+	free_candev(net);
+
+	dev_err(&spi->dev, "Probe failed, err=%d\n", -ret);
+	return ret;
+}
+
+static int tss463aa_can_remove(struct spi_device *spi)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	struct net_device *net = priv->net;
+
+	unregister_candev(net);
+
+	tss463aa_power_enable(spi, priv->power, 0);
+
+	if (!IS_ERR(priv->clk))
+		clk_disable_unprepare(priv->clk);
+
+	free_candev(net);
+
+	return 0;
+}
+
+static int __maybe_unused tss463aa_can_suspend(struct device *dev)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	struct net_device *net = priv->net;
+
+	priv->force_quit = 1;
+	disable_irq(spi->irq);
+
+	/* Note: at this point neither IST nor workqueues are running.
+	 * open/stop cannot be called anyway so locking is not needed
+	 */
+	if (netif_running(net)) {
+		netif_device_detach(net);
+
+		tss463aa_hw_sleep(spi);
+		priv->after_suspend = TSS463AA_AFTER_SUSPEND_UP;
+	} else {
+		priv->after_suspend = TSS463AA_AFTER_SUSPEND_DOWN;
+	}
+
+	if (!IS_ERR_OR_NULL(priv->power)) {
+		regulator_disable(priv->power);
+		priv->after_suspend |= TSS463AA_AFTER_SUSPEND_POWER;
+	}
+
+	return 0;
+}
+
+static int __maybe_unused tss463aa_can_resume(struct device *dev)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+
+	if (priv->after_suspend & TSS463AA_AFTER_SUSPEND_POWER)
+		tss463aa_power_enable(spi, priv->power, 1);
+
+	if (priv->after_suspend & TSS463AA_AFTER_SUSPEND_UP) {
+		queue_work(priv->wq, &priv->restart_work);
+	} else {
+		priv->after_suspend = 0;
+	}
+
+	priv->force_quit = 0;
+	enable_irq(spi->irq);
+	return 0;
+}
+
+static SIMPLE_DEV_PM_OPS(tss463aa_can_pm_ops, tss463aa_can_suspend, tss463aa_can_resume);
+
+static struct spi_driver tss463aa_can_driver = {
+	.driver = {
+		.name = KBUILD_MODNAME,
+		.of_match_table = tss463aa_of_match,
+		.pm = &tss463aa_can_pm_ops,
+	},
+	.id_table = tss463aa_id_table, /* FIXME ??? */
+	.probe = tss463aa_can_probe,
+	.remove = tss463aa_can_remove,
+};
+
+module_spi_driver(tss463aa_can_driver);
+
+MODULE_AUTHOR("Danny Milosavljevic <dannym@scratchpost.org>");
+MODULE_DESCRIPTION("Atmel TSS463 VAN driver");
+MODULE_LICENSE("GPL v2");
+
