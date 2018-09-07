@@ -47,6 +47,7 @@
 /* If we do not want an ACK and must not get one. */
 #define CANFD_DRAK 0x80
 
+/* If an ACK was requested (FYI only). */
 #define CANFD_ACK 0x20
 
 /* "Reply" request, f.e. read-register. */
