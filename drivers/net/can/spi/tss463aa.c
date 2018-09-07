@@ -1186,6 +1186,12 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 		//	new_state = CAN_STATE_ERROR_PASSIVE;
 		//	new_state = CAN_STATE_ERROR_WARNING;
 
+		if ((intf & TSS463AA_INTERRUPT_STATUS_RST) != ) {
+			dev_dbg(&spi->dev, "chip reset happened.  Glitch?\n");
+			new_state = CAN_STATE_BUS_OFF;
+			/* TODO: can_restart(net); */
+		}
+
 		if (new_state != priv->can.state) {
 			tss463aa_update_can_state(priv, new_state);
 			if (new_state == CAN_STATE_BUS_OFF) {
@@ -1201,8 +1207,6 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 		if (intf == 0)
 			break;
 
-		if (intf & TSS463AA_INTERRUPT_STATUS_RST)
-			dev_dbg(&spi->dev, "chip reset happened.\n");
 		if (intf & (TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK | TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE))
 			for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
 				u8 channel_status = tss463aa_hw_read(spi, channel_offset + 3);
