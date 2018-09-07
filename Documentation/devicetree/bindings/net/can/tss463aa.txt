@@ -47,3 +47,20 @@ van0: tss463aa@1 {
 		};
 	};
 };
+
+Considerations
+--------------
+
+The overall design of the driver assumes that each channel can either transmits or receive, not both.  But there is an exception.
+
+This exception are "Reply" request messages.
+
+These are like IPC calls in the sense of there's a request and an immediate reply that is "part" of the logical unit.
+
+These can be sent via a channel that can transmit.  After the "Reply" request message has been transmitted, one message (the response) is allowed to be received on that channel.  After that, receiving on the channel is disabled again.
+
+This is all well and good, but the actual high-level network layer knows nothing about this IPC stuff.  There's the hope it will be somehow possible to keep a serialized ordering of both TX and RX interleaved - that would help.
+
+It's also possible to wait for a "Reply" request ourselves.  This can be done on an "reception" channel.
+
+After that, the client must respond either immediately or with a deferred reply.If he doesn't, the next "Reply" request cannot be waited for.
