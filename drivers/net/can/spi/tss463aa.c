@@ -47,7 +47,7 @@
 /* If we do not want an ACK and must not get one. */
 #define CANFD_DRAK 0x80
 
-/* If an ACK was requested (FYI only). */
+/* If an ACK was requested by the sender (FYI only). */
 #define CANFD_ACK 0x20
 
 /* "Reply" request, f.e. read-register. */
@@ -58,7 +58,6 @@
 /* TODO: Support linked channels. */
 /* TODO: Support rearbitration. */
 /* TODO: Support aborting. */
-/* TODO: Handle changing ctrlmode (DRAK). */
 /* TODO: Handle disabled channels better. */
 /* TODO: Support ndo_tx_timeout (and abort there?). */
 /* Notes on "Reply" requests:
