@@ -634,7 +634,7 @@ static int tss463aa_set_mode(struct net_device *net, enum can_mode mode)
 		/* We have to delay work since SPI I/O may sleep */
 		priv->can.state = CAN_STATE_ERROR_ACTIVE;
 		priv->restart_tx = 1;
-		if (priv->can.restart_ms == 0)
+		if (priv->can.restart_ms == 0) /* no automatic restart */
 			priv->after_suspend = TSS463AA_AFTER_SUSPEND_RESTART;
 		queue_work(priv->wq, &priv->restart_work);
 		break;
@@ -1188,7 +1188,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 			tss463aa_update_can_state(priv, new_state);
 			if (new_state == CAN_STATE_BUS_OFF) {
 				can_bus_off(net);
-				if (priv->can.restart_ms == 0) {
+				if (priv->can.restart_ms == 0) { /* no automatic restart */
 					priv->force_quit = 1;
 					tss463aa_hw_sleep(spi);
 					break;
