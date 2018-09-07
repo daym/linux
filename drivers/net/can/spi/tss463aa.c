@@ -54,8 +54,8 @@
 /* TODO: Support linked channels. */
 /* TODO: Support rearbitration. */
 /* TODO: Support aborting. */
-/* TODO: Handle changing ctrlmode (DRAK) */
-/* TODO: Handle disabled channels better (right now, only reception is disabled - transmission is not). */
+/* TODO: Handle changing ctrlmode (DRAK). */
+/* TODO: Handle disabled channels better. */
 /* Notes on "Reply" requests:
 
 We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "transmit"].
