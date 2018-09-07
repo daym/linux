@@ -60,7 +60,7 @@
 
 We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "transmit"].
 	Afterwards, CHRx=1, but CHTx may be unchanged (if there was an in-frame reply).
-	A Reply request potentially needs both Rx and Tx of one channel at the same time.
+	A Reply request potentially needs both Rx and Tx of one channel for the same frame.
 		So we shouldn't also wait for a Reply request (or anything) on the same channel.
 
 ----------------------------------- or ------------------------------------------------------------
