@@ -52,6 +52,8 @@
 /* TODO: Handle TX error some more. */
 /* TODO: Support EXT some more. */
 /* TODO: Support linked channels. */
+/* TODO: Support rearbitration. */
+/* TODO: Support aborting. */
 /* TODO: Handle disabled channels better (right now, only reception is disabled - transmission is not). */
 /* Notes on "Reply" requests:
 
