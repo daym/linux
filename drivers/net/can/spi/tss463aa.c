@@ -696,7 +696,7 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		u16 idtag = 0;
 		u16 idmask = 0xFFF;
 
-		bool drak = of_property_read_bool(dt_node, "tss463aa,disable-ack-request");
+		bool drak = of_property_read_bool(dt_node, "tss463aa,disable-ack");
 		bool listener = of_property_read_bool(dt_node, "tss463aa,listener");
 		bool CHRx = !listener; /* CHRx: RX done */
 		bool CHTx = true; /* CHTx: TX done */
