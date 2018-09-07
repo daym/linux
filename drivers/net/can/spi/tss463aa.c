@@ -577,6 +577,8 @@ static int tss463aa_set_bittiming(struct net_device *dev)
 		return -EINVAL;
 	}
 
+	/* Note: Max. VAN transfer rate: 1 Mbit/s */
+
 	CD = ilog2(timing->brp);
 	if (CD >= 8 || (1 << CD) != timing->brp)
 		return -EINVAL;
