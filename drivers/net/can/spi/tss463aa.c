@@ -44,7 +44,7 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 
-#define CANFD_RAK 0x80
+#define CANFD_DRAK 0x80
 
 /* "Reply" request, f.e. read-register. */
 #define CANFD_RNW 0x40
@@ -418,7 +418,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 		idt = frame->can_id & CAN_SFF_MASK;
 	rnw = (frame->flags & CANFD_RNW) != 0;
 	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
-	rak = (frame->flags & CANFD_RAK) != 0;
+	rak = (frame->flags & CANFD_DRAK) == 0;
 
 	channel_offset = tss463aa_hw_find_transmission_channel(spi, ext, rnw, rtr);
 	if (!channel_offset) {
@@ -514,8 +514,8 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
 		frame->can_id |= CAN_RTR_FLAG;
 	if (buf[0] & 0x40)
 		frame->flags |= CANFD_RNW;
-	if (buf[0] & 0x80)
-		frame->flags |= CANFD_RAK;
+	if ((buf[0] & 0x80) == 0)
+		frame->flags |= CANFD_DRAK;
 	/* Note: A combination RNW = 0 (write) && RTR = 1 will never happen (VAN standard). */
 
 	frame->can_id = id | CAN_EFF_FLAG; /* Note: CAN IDs have 29 bits. */
