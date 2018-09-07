@@ -629,7 +629,7 @@ static int tss463aa_set_mode(struct net_device *net, enum can_mode mode)
 	struct tss463aa_priv *priv = netdev_priv(net);
 
 	switch (mode) {
-	case CAN_MODE_START:
+	case CAN_MODE_START: /* Restart, starting from bus-off */
 		tss463aa_clean(net);
 		/* We have to delay work since SPI I/O may sleep */
 		priv->can.state = CAN_STATE_ERROR_ACTIVE;
