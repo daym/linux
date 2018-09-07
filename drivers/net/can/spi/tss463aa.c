@@ -696,13 +696,9 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		u16 idtag = 0;
 		u16 idmask = 0xFFF;
 
-		bool drak = of_property_read_bool(dt_node, "tss463aa,disable-ack");
-		bool listener = of_property_read_bool(dt_node, "tss463aa,listener");
-		bool CHRx = !listener; /* CHRx: RX done */
-		bool CHTx = true; /* CHTx: TX done */
-
 		bool ext = !of_property_read_bool(dt_node, "tss463aa,disable-recessive-ext");
-		bool rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
+		bool listener = of_property_read_bool(dt_node, "tss463aa,listener");
+		bool drak = of_property_read_bool(dt_node, "tss463aa,disable-ack");
 		/*
 		RNW RTR CHTx CHRx Meaning
 		0   0   0    ?    Transmit Message
@@ -716,6 +712,10 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		*/
 		bool rnw = of_property_read_bool(dt_node, "tss463aa,rnw");
 		bool rtr = of_property_read_bool(dt_node, "tss463aa,remote-transmission-request");
+		bool CHRx = !listener; /* CHRx: RX done */
+		bool CHTx = true; /* CHTx: TX done */
+
+		bool rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
 
 		if (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY)
 			drak = true;
