@@ -809,10 +809,10 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 
 	/* TODO: Maybe allow SDC to be set?  Probably very opaque to the user. */
 
-	if (of_property_read_u32(dt_node, "tss463aa,diagnosis-mode", &M))
+	if (of_property_read_u32(dt_node, "tss463aa,diagnostic-mode", &M))
 		M = 3; /* automatic selection */
 	if (M > 3) {
-		dev_warn(&spi->dev, "Value of 'tss463aa,diagnosis-mode' is invalid. Clamping.\n");
+		dev_warn(&spi->dev, "Value of 'tss463aa,diagnostic-mode' is invalid. Clamping.\n");
 		return -EINVAL;
 	}
 
