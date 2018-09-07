@@ -1,0 +1,49 @@
+Atmel TSS463AA VAN controller Device Tree Bindings
+--------------------------------------------------
+
+The first node is a child node of the SPI device tree node.
+
+Required properties:
+- compatible: "atmel,tss463aa"
+- reg: Chip[select] number.
+- interrupts: interrupt specifier for the sole interrupt.
+- clock: phandle and clock specifier.
+- channels: List of channel configurations.
+
+Example
+-------
+
+tss463aa_clock_source: oscillator {
+	#clock-cells = <0>;
+	compatible = "fixed-clock";
+	clock-frequency = <4000000>;
+};
+
+van0: tss463aa@1 {
+	compatible = "atmel,tss463aa";
+	reg = <0>;
+	interrupt-parent = <&pio>;
+	interrupts = <8 10 IRQ_TYPE_LEVEL_LOW>;
+	interrupt-names = "activity";
+	spi-max-frequency = <4000000>;
+	spi-cpol;
+	spi-cpha;
+	clocks = <&tss463aa_clock_source>;
+	tss463aa,diagnostic-mode=<TSS463AA_DIAGNOSTIC_MODE_RXD0>;
+	tss463aa,channels {
+		channel@0 {
+			tss463aa,listener;
+			tss463aa,disable-ack;
+			tss463aa,remote-transmission-request;
+			tss463aa,idtag=<0>;
+			tss463aa,idmask=<0>;
+			tss463aa,msgpointer=<0>;
+			tss463aa,msglen=<31>;
+		};
+		channel@1 {
+			tss463aa,disable-ack; /* For Reply requests, reception is possible for a short while each. */
+			tss463aa,msgpointer=<32>;
+			tss463aa,msglen=<31>;
+		};
+	};
+};
