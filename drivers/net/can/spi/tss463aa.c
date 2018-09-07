@@ -1082,7 +1082,6 @@ static void tss463aa_update_can_error(struct tss463aa_priv *priv, struct can_fra
 	if (last_error & TSS463AA_LAST_ERROR_CV) {
 		cf->can_id |= CAN_ERR_PROT;
 		cf->data[2] |= CAN_ERR_PROT_FORM;
-		cf->data[3] = CAN_ERR_PROT_LOC_ACK;
 	}
 
 	if (transmission) {
