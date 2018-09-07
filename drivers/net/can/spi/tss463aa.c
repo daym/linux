@@ -336,17 +336,17 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 			if ((status & 3) == 3) {
 				u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
 				bool rext = (idthcmd & 8) != 0;
-				if (ext == rext) {
+				if (ext == rext)
 					return channel_offset;
-				}
-
 			}
 		} else {
 			u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
 			if ((idthcmd & 3) == 2) { /* RNW = 1, RTR = 0 */
 				/* We are replying to a "Reply" request */
-				/* FIXME: MATCH channel and EXT. */
-				return channel_offset;
+				/* FIXME: MATCH channel. */
+				bool rext = (idthcmd & 8) != 0;
+				if (ext == rext)
+					return channel_offset;
 			}
 		}
 	}
