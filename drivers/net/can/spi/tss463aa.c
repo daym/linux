@@ -280,6 +280,26 @@ static int tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
 	return 0;
 }
 
+#define TSS463AA_CHANNELFIELD1_RTR BIT(0)
+#define TSS463AA_CHANNELFIELD1_RNW BIT(1)
+#define TSS463AA_CHANNELFIELD1_RAK BIT(2)
+#define TSS463AA_CHANNELFIELD1_EXT BIT(3)
+#define TSS463AA_CHANNELFIELD1_IDTL_SHIFT 4
+#define TSS463AA_CHANNELFIELD1_IDTL_MASK 0xF0
+
+#define TSS463AA_CHANNELFIELD2_DRAK BIT(7)
+#define TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT 0
+#define TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK 0x7F
+
+#define TSS463AA_CHANNELFIELD3_CHRX BIT(0)
+#define TSS463AA_CHANNELFIELD3_CHTX BIT(1)
+#define TSS463AA_CHANNELFIELD3_CHER BIT(2)
+#define TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT 3
+#define TSS463AA_CHANNELFIELD3_MSGLEN_MASK 0xF8
+
+#define TSS463AA_CHANNELFIELD7_IDM_MASK 0xF0
+#define TSS463AA_CHANNELFIELD7_IDM_SHIFT 4
+
 /* Reads the channel ID and the setup from the channel at CHANNEL_OFFSET.
 
 The channel ID is stored into out_id, which is not optional.
@@ -298,7 +318,9 @@ static int tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* o
 	ret = tss463aa_spi_trans(spi, 4);
 	if (ret)
 		return ret;
-	*out_id = (priv->spi_rx_buf[2] << 4) | (priv->spi_rx_buf[3] >> 4);
+	*out_id = (priv->spi_rx_buf[2] << 4) |
+	          ((priv->spi_rx_buf[3] & TSS463AA_CHANNELFIELD1_IDTL_MASK) >>
+	           TSS463AA_CHANNELFIELD1_IDTL_SHIFT);
 	if (out_setup)
 		*out_setup = priv->spi_rx_buf[3] & 0x0F;
 	return 0;
@@ -333,18 +355,23 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET, channel = 0; channel < TSS463AA_CHANNEL_COUNT; channel_offset += TSS463AA_CHANNEL_SIZE, ++channel) {
 		if (!priv->listeningchannels[channel]) {
 			u8 status = tss463aa_hw_read(spi, channel_offset + 3);
-			if ((status & 3) == 3) {
+			if ((status & (TSS463AA_CHANNELFIELD3_CHRX |
+			               TSS463AA_CHANNELFIELD3_CHTX)) ==
+			    (TSS463AA_CHANNELFIELD3_CHRX |
+			     TSS463AA_CHANNELFIELD3_CHTX)) {
 				u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
-				bool rext = (idthcmd & 8) != 0;
+				bool rext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
 				if (ext == rext)
 					return channel_offset;
 			}
 		} else {
 			u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
-			if ((idthcmd & 3) == 2) { /* RNW = 1, RTR = 0 */
+			if ((idthcmd & (TSS463AA_CHANNELFIELD1_RNW |
+			                TSS463AA_CHANNELFIELD1_RTR)) ==
+			    TSS463AA_CHANNELFIELD1_RNW) {
 				/* We are replying to a "Reply" request */
 				/* FIXME: MATCH channel. */
-				bool rext = (idthcmd & 8) != 0;
+				bool rext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
 				if (ext == rext)
 					return channel_offset;
 			}
@@ -408,21 +435,23 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	if (ret)
 		return ret;
 
-	ret = tss463aa_hw_write(spi, channel_offset + 1, (idt << 4) |
-	                        (ext ? 8 : 0) |
-	                        (rtr ? 1 : 0) |
-	                        (rnw ? 2 : 0) |
-	                        (rak ? 4 : 0));
+	ret = tss463aa_hw_write(spi, channel_offset + 1,
+	                        (idt << TSS463AA_CHANNELFIELD1_IDTL_SHIFT) |
+	                        (ext ? TSS463AA_CHANNELFIELD1_EXT : 0) |
+	                        (rtr ? TSS463AA_CHANNELFIELD1_RTR : 0) |
+	                        (rnw ? TSS463AA_CHANNELFIELD1_RNW : 0) |
+	                        (rak ? TSS463AA_CHANNELFIELD1_RAK : 0));
 	if (ret)
 		return ret;
 
 	/* Transmit */
-	u8 mask = 5;
+	u8 keep = TSS463AA_CHANNELFIELD3_CHRX |
+	          TSS463AA_CHANNELFIELD3_CHER;
 	if (rnw) /* "Reply" request (either sent or received): Allow receiving, once. */
-		mask = 4;
+		keep &= ~TSS463AA_CHANNELFIELD3_CHRX;
 	ret = tss463aa_hw_write(spi, channel_offset + 3,
-	                        (tss463aa_hw_read(spi, channel_offset + 3) & mask) |
-                                (len1 << 3));
+	                        (tss463aa_hw_read(spi, channel_offset + 3) & keep) |
+                                (len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT));
 	return ret;
 }
 
@@ -666,25 +695,30 @@ static int tss463aa_activate(struct spi_device *spi)
 	return 0;
 }
 
-#define TSS463AA_CHANNELDRAK BIT(7)
-
 __attribute__((warn_unused_result))
 static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
 	priv->spi_tx_buf[0] = offset;
-	priv->spi_tx_buf[1] = 0xE0; /* write register */
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
 	priv->spi_tx_buf[2] = idtag >> 4;
-	priv->spi_tx_buf[3] = (idtag << 4) | (ext ? 8 : 0) | (rak ? 4 : 0) | (rnw ? 2 : 0) | (rtr ? 1 : 0); /* ID tag / command */
-	priv->spi_tx_buf[4] = (drak ? TSS463AA_CHANNELDRAK : 0) | msgpointer;
-	priv->spi_tx_buf[5] = (CHTx ? 2 : 0) | (CHRx ? 1 : 0) | (msglen << 3); /* Note: Clears error, too. */
+	priv->spi_tx_buf[3] = (idtag << TSS463AA_CHANNELFIELD1_IDTL_SHIFT) |
+	                      (ext ? TSS463AA_CHANNELFIELD1_EXT : 0) |
+	                      (rak ? TSS463AA_CHANNELFIELD1_RAK : 0) |
+	                      (rnw ? TSS463AA_CHANNELFIELD1_RNW : 0) |
+	                      (rtr ? TSS463AA_CHANNELFIELD1_RTR : 0);
+	priv->spi_tx_buf[4] = (drak ? TSS463AA_CHANNELFIELD2_DRAK : 0) |
+	                      (msgpointer << TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT);
+	priv->spi_tx_buf[5] = (CHTx ? TSS463AA_CHANNELFIELD3_CHTX : 0) |
+	                      (CHRx ? TSS463AA_CHANNELFIELD3_CHRX : 0) |
+	                      (msglen << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT); /* Note: Clears error, too. */
 	if (tss463aa_spi_trans(spi, 6))
 		return -EIO;
 	priv->spi_tx_buf[0] = offset + 6;
-	priv->spi_tx_buf[1] = 0xE0; /* write register */
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
 	priv->spi_tx_buf[2] = idmask >> 4;
-	priv->spi_tx_buf[3] = idmask << 4;
+	priv->spi_tx_buf[3] = idmask << TSS463AA_CHANNELFIELD7_IDM_SHIFT;
 	if (tss463aa_spi_trans(spi, 4))
 		return -EIO;
 
@@ -1170,7 +1204,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 		if (intf & (TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK | TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE))
 			for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
 				u8 channel_status = tss463aa_hw_read(spi, channel_offset + 3);
-				if (channel_status & 4) { /* CHER */
+				if (channel_status & TSS463AA_CHANNELFIELD3_CHER) {
 					int ret;
 					/* TODO: Get error (if possible) */
 					dev_warn(&spi->dev, "channel with offset %u logged an error. Clearing it.\n", channel_offset);
@@ -1204,9 +1238,9 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 						}
 					} else if (priv->listeningchannels[channel_offset / TSS463AA_CHANNEL_SIZE]) { /* sanity check */
 						/* Allow receiving another message. */
-						tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 1);
+						tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ TSS463AA_CHANNELFIELD3_CHRX);
 					}
-				} else if ((channel_status & 2) != 0) { /* TX done */
+				} else if ((channel_status & TSS463AA_CHANNELFIELD3_CHTX) != 0) {
 					/* Record previous transmission stats */
 					if (priv->tx_len) {
 						net->stats.tx_packets++;
