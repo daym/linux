@@ -44,7 +44,7 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 
-/* Disable ACK */
+/* If we do not want an ACK and must not get one. */
 #define CANFD_DRAK 0x80
 
 #define CANFD_ACK 0x20
