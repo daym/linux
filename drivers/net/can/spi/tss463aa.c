@@ -789,7 +789,9 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 
 	/* Set up Transmission Control settings */
 
-	of_property_read_u8(dt_node, "tss463aa,transmission-retry-count", &transmission_retry_count);
+	ret = of_property_read_u8(dt_node, "tss463aa,transmission-retry-count", &transmission_retry_count);
+	if (ret)
+		return ret;
 	if (transmission_retry_count > (TSS463AA_TRANSMISSION_CONTROL_MR_MASK >> TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT)) {
 		dev_warn(&spi->dev, "Value for 'transmission retry count' is invalid. Clamping.\n");
 		transmission_retry_count = TSS463AA_TRANSMISSION_CONTROL_MR_MASK >> TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT;
