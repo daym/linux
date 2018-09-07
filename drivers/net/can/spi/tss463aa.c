@@ -324,19 +324,29 @@ static int tss463aa_hw_sleep(struct spi_device *spi)
 
 /* Matches a channel we can send messages on. */
 __attribute__((warn_unused_result))
-static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext)
+static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext, bool rnw, bool rtr)
 {
 	u8 channel_offset;
 	u8 channel;
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	/* FIXME: Try to find and prefer an exact ID match (in order to support Reply messages) */
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET, channel = 0; channel < TSS463AA_CHANNEL_COUNT; channel_offset += TSS463AA_CHANNEL_SIZE, ++channel) {
 		if (!priv->listeningchannels[channel]) {
 			u8 status = tss463aa_hw_read(spi, channel_offset + 3);
 			if ((status & 3) == 3) {
 				u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
 				bool rext = (idthcmd & 8) != 0;
-				if (ext == rext)
+				if (ext == rext) {
 					return channel_offset;
+				}
+
+			}
+		} else {
+			u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
+			if ((idthcmd & 3) == 2) { /* RNW = 1, RTR = 0 */
+				/* We are replying to a "Reply" request */
+				/* FIXME: MATCH channel. */
+				return channel_offset;
 			}
 		}
 	}
@@ -383,7 +393,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
 	rak = (frame->flags & CANFD_RAK) != 0;
 
-	channel_offset = tss463aa_hw_find_transmission_channel(spi, ext);
+	channel_offset = tss463aa_hw_find_transmission_channel(spi, ext, rnw, rtr);
 	if (!channel_offset) {
 		dev_err(&spi->dev, "cannot transmit message to %X since no channels are free.\n", idt);
 		/* FIXME: Retry */
