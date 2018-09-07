@@ -305,11 +305,11 @@ static int tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* o
 }
 
 #define TSS463AA_COMMAND 3
-#define TSS463AA_COMMAND_SLEEP 64
-#define TSS463AA_COMMAND_IDLE 32
-#define TSS463AA_COMMAND_ACTIVATE 16
-#define TSS463AA_COMMAND_REAR 8
-#define TSS463AA_COMMAND_MSDC 1
+#define TSS463AA_COMMAND_SLEEP BIT(6)
+#define TSS463AA_COMMAND_IDLE BIT(5)
+#define TSS463AA_COMMAND_ACTIVATE BIT(4)
+#define TSS463AA_COMMAND_REAR BIT(3)
+#define TSS463AA_COMMAND_MSDC BIT(0)
 
 /* Note: To wake up, call tss463aa_reset. */
 __attribute__((warn_unused_result))
@@ -345,7 +345,7 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 			u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
 			if ((idthcmd & 3) == 2) { /* RNW = 1, RTR = 0 */
 				/* We are replying to a "Reply" request */
-				/* FIXME: MATCH channel. */
+				/* FIXME: MATCH channel and EXT. */
 				return channel_offset;
 			}
 		}
@@ -502,9 +502,9 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
 }
 
 #define TSS463AA_LINE_CONTROL 0
-#define TSS463AA_LINE_CONTROL_IVRX 1
-#define TSS463AA_LINE_CONTROL_IVTX 2
-#define TSS463AA_LINE_CONTROL_PC 8
+#define TSS463AA_LINE_CONTROL_IVRX BIT(0)
+#define TSS463AA_LINE_CONTROL_IVTX BIT(1)
+#define TSS463AA_LINE_CONTROL_PC BIT(3)
 #define TSS463AA_LINE_CONTROL_CD_SHIFT 4
 #define TSS463AA_LINE_CONTROL_CD_MASK 0xF0
 
@@ -558,15 +558,15 @@ static int tss463aa_set_bittiming(struct net_device *dev)
 }
 
 #define TSS463AA_TRANSMISSION_CONTROL 1
-#define TSS463AA_TRANSMISSION_CONTROL_MT 1
+#define TSS463AA_TRANSMISSION_CONTROL_MT BIT(0)
 #define TSS463AA_TRANSMISSION_CONTROL_VER_SHIFT 1
 #define TSS463AA_TRANSMISSION_CONTROL_VER_MASK 14
 #define TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT 4
 #define TSS463AA_TRANSMISSION_CONTROL_MR_MASK 112
 
 #define TSS463AA_DIAGNOSTIC_CONTROL 2
-#define TSS463AA_DIAGNOSTIC_CONTROL_ESDC 1
-#define TSS463AA_DIAGNOSTIC_CONTROL_ETIP 2
+#define TSS463AA_DIAGNOSTIC_CONTROL_ESDC BIT(0)
+#define TSS463AA_DIAGNOSTIC_CONTROL_ETIP BIT(1)
 #define TSS463AA_DIAGNOSTIC_CONTROL_M_SHIFT 2
 #define TSS463AA_DIAGNOSTIC_CONTROL_M_MASK 12
 #define TSS463AA_DIAGNOSTIC_CONTROL_SDC_SHIFT 4
@@ -617,29 +617,29 @@ static int tss463aa_set_mode(struct net_device *net, enum can_mode mode)
 }
 
 #define TSS463AA_INTE 0x0A
-#define TSS463AA_INTE_TXERR 16
-#define TSS463AA_INTE_TXOK 8
-#define TSS463AA_INTE_RXERR 4
-#define TSS463AA_INTE_RXOK 2
-#define TSS463AA_INTE_RXNOK 1 /* with no RAK */
+#define TSS463AA_INTE_TXERR BIT(4)
+#define TSS463AA_INTE_TXOK BIT(3)
+#define TSS463AA_INTE_RXERR BIT(2)
+#define TSS463AA_INTE_RXOK BIT(1)
+#define TSS463AA_INTE_RXNOK BIT(0) /* with no RAK */
 
 #define TSS463AA_LINE_STATUS 4
-#define TSS463AA_LINE_STATUS_RXG 1 /* receiving */
-#define TSS463AA_LINE_STATUS_TXG 2 /* transmitting */
+#define TSS463AA_LINE_STATUS_RXG BIT(0) /* receiving */
+#define TSS463AA_LINE_STATUS_TXG BIT(1) /* transmitting */
 #define TSS463AA_LINE_STATUS_SBA_SHIFT 2
 #define TSS463AA_LINE_STATUS_SBA_MASK 12
-#define TSS463AA_LINE_STATUS_SC 16 /* error anywhen mark */
-#define TSS463AA_LINE_STATUS_IDG 32 /* idling */
-#define TSS463AA_LINE_STATUS_SPG 64 /* sleeping */
+#define TSS463AA_LINE_STATUS_SC BIT(4) /* error anywhen mark */
+#define TSS463AA_LINE_STATUS_IDG BIT(5) /* idling */
+#define TSS463AA_LINE_STATUS_SPG BIT(6) /* sleeping */
 
 #define TSS463AA_INTERRUPT_STATUS 9
 #define TSS463AA_INTERRUPT_STATUS_MASK 0x9f
-#define TSS463AA_INTERRUPT_STATUS_RNOK 1 /* reception without ACK OK */
-#define TSS463AA_INTERRUPT_STATUS_ROK 2 /* reception OK */
-#define TSS463AA_INTERRUPT_STATUS_RE 4 /* reception error */
-#define TSS463AA_INTERRUPT_STATUS_TOK 8 /* transmission OK */
-#define TSS463AA_INTERRUPT_STATUS_TE 16 /* transmission error */
-#define TSS463AA_INTERRUPT_STATUS_RST 128 /* reset */
+#define TSS463AA_INTERRUPT_STATUS_RNOK BIT(0) /* reception without ACK OK */
+#define TSS463AA_INTERRUPT_STATUS_ROK BIT(1) /* reception OK */
+#define TSS463AA_INTERRUPT_STATUS_RE BIT(2) /* reception error */
+#define TSS463AA_INTERRUPT_STATUS_TOK BIT(3) /* transmission OK */
+#define TSS463AA_INTERRUPT_STATUS_TE BIT(4) /* transmission error */
+#define TSS463AA_INTERRUPT_STATUS_RST BIT(7) /* reset */
 
 #define TSS463AA_INTERRUPT_RESET 0x0b
 #define TSS463AA_INTERRUPT_RESET_MASK 0x9f
@@ -666,7 +666,7 @@ static int tss463aa_activate(struct spi_device *spi)
 	return 0;
 }
 
-#define TSS463AA_CHANNELDRAK 0x80
+#define TSS463AA_CHANNELDRAK BIT(7)
 
 __attribute__((warn_unused_result))
 static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
@@ -1009,12 +1009,12 @@ static void tss463aa_restart_work_handler(struct work_struct *ws)
 }
 
 #define TSS463AA_LAST_ERROR 7
-#define TSS463AA_LAST_ERROR_BOC 0x40 /* RX: Buffer occupied */
-#define TSS463AA_LAST_ERROR_BOV 0x20 /* RX: Buffer overflow */
-#define TSS463AA_LAST_ERROR_FCSE 0x08 /* RX: Frame check sequence error */
-#define TSS463AA_LAST_ERROR_ACKE 0x04 /* TX: Collision on ACK */
-#define TSS463AA_LAST_ERROR_CV 0x02 /* RX: Manchester code violation or a physical violation */
-#define TSS463AA_LAST_ERROR_FV 0x01 /* RX: Collision on ACK */
+#define TSS463AA_LAST_ERROR_BOC BIT(6) /* RX: Buffer occupied */
+#define TSS463AA_LAST_ERROR_BOV BIT(5) /* RX: Buffer overflow */
+#define TSS463AA_LAST_ERROR_FCSE BIT(3) /* RX: Frame check sequence error */
+#define TSS463AA_LAST_ERROR_ACKE BIT(2) /* TX: Collision on ACK */
+#define TSS463AA_LAST_ERROR_CV BIT(1) /* RX: Manchester code violation or a physical violation */
+#define TSS463AA_LAST_ERROR_FV BIT(0) /* RX: Collision on ACK */
 
 #define TSS463AA_TRANSMISSION_STATUS 5
 #define TSS463AA_TRANSMISSION_STATUS_NRT_MASK 0xF0
