@@ -292,7 +292,6 @@ static int tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* o
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
 	priv->spi_tx_buf[2] = 0xFF;
 	priv->spi_tx_buf[3] = 0xFF;
-	/* FIXME: Check for errors */
 	ret = tss463aa_spi_trans(spi, 4);
 	if (ret)
 		return ret;
