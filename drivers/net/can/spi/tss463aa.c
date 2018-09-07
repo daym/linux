@@ -1160,11 +1160,26 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 		if (intf & (TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK | TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE))
 			for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
 				u8 channel_status = tss463aa_hw_read(spi, channel_offset + 3);
+				if (channel_status & 4) { /* CHER */
+					int ret;
+					/* TODO: Get error (if possible) */
+					dev_warn(&spi->dev, "channel with offset %u logged an error. Clearing it.\n", channel_offset);
+					channel_status &= ~4;
+					ret = tss463aa_hw_write(spi, channel_offset + 3, channel_status);
+					if (ret)
+						dev_err(&spi->dev, "could not clear error.\n");
+				}
 				if (channel_status & 1) { /* RX occupied */
 					// TODO: Check TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK ?
-					u16 id;
-					u8 setup;
-					tss463aa_hw_read_id(spi, channel_offset, &id, &setup);
+					u16 id = 0;
+					u8 setup = 0;
+					int ret;
+					ret = tss463aa_hw_read_id(spi, channel_offset, &id, &setup);
+					if (ret) {
+						dev_err(&spi->dev, "could not read channel setup.\n");
+						continue;
+					}
+
 					tss463aa_hw_rx(spi, channel_offset, id);
 					if ((setup & 2) == 2) {
 						/* "Reply" requests don't receive automatically. */
@@ -1181,7 +1196,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 						/* Allow receiving another message. */
 						tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 1);
 					}
-				} else if (channel_status & 2) { /* TX done */
+				} else if ((channel_status & 2) != 0) { /* TX done */
 					/* Record previous transmission stats */
 					if (priv->tx_len) {
 						net->stats.tx_packets++;
@@ -1194,13 +1209,6 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 						/* Allow new transmission */
 						netif_wake_queue(net);
 					}
-				} else if (channel_status & 4) { /* CHER */
-					int ret;
-					/* TODO: Get error (if possible) */
-					dev_warn(&spi->dev, "channel with offset %u logged an error. Clearing it.\n", channel_offset);
-					ret = tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 4);
-					if (ret)
-						dev_err(&spi->dev, "could not clear error.\n");
 				}
 			}
 
