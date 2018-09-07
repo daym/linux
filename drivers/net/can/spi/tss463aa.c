@@ -106,6 +106,10 @@ struct tss463aa_priv {
 	struct spi_device *spi;
 	enum tss463aa_model model;
 	__u32 xtal_clock_frequency;
+	/* Because of the shared buffer, each channel can only either send or receive at the same time.
+	In order to reduce complexity, just have each channel do either send or receive at all times.
+	As an exception, allow RNW RTR channels to SHORTLY receive - even though they usually transmit. */
+	bool listeningchannels[TSS463AA_CHANNEL_COUNT];
 
 	struct mutex tss463aa_lock;
 
@@ -319,29 +323,22 @@ static int tss463aa_hw_sleep(struct spi_device *spi)
 	return ret;
 }
 
+/* Matches a channel we can send messages on. */
 __attribute__((warn_unused_result))
-static u8 tss463aa_hw_match_channel(struct spi_device *spi, u16 idt, int rnw, int rtr, int use_rtr)
+static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext)
 {
 	u8 channel_offset;
-	u8 rsetup;
-	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
-		u16 id;
-		u16 idmask;
-		int ret;
-		u8 rrnw = 0;
-		u8 rrtr = 0;
-		ret = tss463aa_hw_read_id(spi, channel_offset, &id, &rsetup);
-		if (ret == 0) {
-			rrtr = (rsetup & 1) != 0;
-			rrnw = (rsetup & 2) != 0;
-			ret = tss463aa_hw_read_id(spi, channel_offset + 6, &idmask, NULL);
-		}
-		if (ret) {
-			dev_err(&spi->dev, "could not read channel configuration.\n");
-			return ret;
-		}
-		if ((id & idmask) == idt && rnw == rrnw && (rtr == rrtr || !use_rtr)) {
-			return channel_offset;
+	u8 channel;
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	for (channel_offset = TSS463AA_CHANNEL0_OFFSET, channel = 0; channel < TSS463AA_CHANNEL_COUNT; channel_offset += TSS463AA_CHANNEL_SIZE, ++channel) {
+		if (!priv->listeningchannels[channel]) {
+			u8 status = tss463aa_hw_read(spi, channel_offset + 3);
+			if ((status & 3) == 3) {
+				u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
+				bool rext = (idthcmd & 8) != 0;
+				if (ext == rext)
+					return channel_offset;
+			}
 		}
 	}
 	return 0;
@@ -374,9 +371,10 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	u16 idt;
 	u8 channel_offset;
 	u8 ret;
-	int rtr;
-	int rnw;
-	int rak;
+	bool ext = true;
+	bool rtr;
+	bool rnw;
+	bool rak;
 	u8 len1 = frame->len + 1; /* includes the status dummy */
 	if ((frame->can_id & CAN_EFF_FLAG) != 0)
 		idt = frame->can_id & CAN_EFF_MASK;
@@ -386,21 +384,26 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
 	rak = (frame->flags & CANFD_RAK) != 0;
 
-	channel_offset = tss463aa_hw_match_channel(spi, idt, rnw, rtr, rnw/* FIXME: 1? */);
+	channel_offset = tss463aa_hw_find_transmission_channel(spi, ext);
 	if (!channel_offset) {
-		dev_err(&spi->dev, "cannot transmit message since no channel accepts IDT = 0x%X\n", idt);
+		dev_err(&spi->dev, "cannot transmit message to %X since no channels are free.\n", idt);
+		/* FIXME: Retry */
 		return -ENOENT;
 	}
+
+	ret = tss463aa_hw_write(spi, channel_offset, idt >> 4);
+	if (ret)
+		return ret;
 
 	ret = tss463aa_hw_tx_frame(spi, channel_offset, frame->data, frame->len);
 	if (ret)
 		return ret;
 
-	ret = tss463aa_hw_write(spi, channel_offset + 1,
-	                     (tss463aa_hw_read(spi, channel_offset + 1) &~ 1) |
-	                     (rtr ? 1 : 0) |
-	                     (rnw ? 2 : 0) |
-	                     (rak ? 4 : 0));
+	ret = tss463aa_hw_write(spi, channel_offset + 1, (idt << 4) |
+	                        (ext ? 8 : 0) |
+	                        (rtr ? 1 : 0) |
+	                        (rnw ? 2 : 0) |
+	                        (rak ? 4 : 0));
 	if (ret)
 		return ret;
 
@@ -657,7 +660,7 @@ static int tss463aa_activate(struct spi_device *spi)
 #define TSS463AA_CHANNELDRAK 0x80
 
 __attribute__((warn_unused_result))
-static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, int CHTx, int CHRx, u8 msgpointer, u8 msglen, int ext, int rak, int rnw, int rtr, int drak)
+static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
@@ -675,6 +678,7 @@ static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag,
 	priv->spi_tx_buf[3] = idmask << 4;
 	if (tss463aa_spi_trans(spi, 4))
 		return -EIO;
+
 	return 0;
 }
 
@@ -692,15 +696,14 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		u8 msglen = 0;
 		u16 idtag = 0;
 		u16 idmask = 0xFFF;
-		u32 msgtype;
 
-		int drak = of_property_read_bool(dt_node, "tss463aa,disable-ack-request");
-		int receiver = of_property_read_bool(dt_node, "tss463aa,receiver");
-		int CHRx = !receiver; /* CHRx: RX done */
-		int CHTx = 1; /* CHTx: TX done */
+		bool drak = of_property_read_bool(dt_node, "tss463aa,disable-ack-request");
+		bool listener = of_property_read_bool(dt_node, "tss463aa,listener");
+		bool CHRx = !listener; /* CHRx: RX done */
+		bool CHTx = true; /* CHTx: TX done */
 
-		int ext = !of_property_read_bool(dt_node, "tss463aa,disable-recessive-ext");
-		int rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
+		bool ext = !of_property_read_bool(dt_node, "tss463aa,disable-recessive-ext");
+		bool rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
 		/*
 		RNW RTR CHTx CHRx Meaning
 		0   0   0    ?    Transmit Message
@@ -712,22 +715,11 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 
 		?   ?   1    1    Inactive
 		*/
-		int rnw = 0;
-		int rtr = 0;
+		bool rnw = of_property_read_bool(dt_node, "tss463aa,rnw");
+		bool rtr = of_property_read_bool(dt_node, "tss463aa,remote-transmission-request");
 
 		if (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY)
-			drak = 1;
-
-		if (of_property_read_u32(dt_node, "tss463aa,msgtype", &msgtype) == 0) {
-			int nCHRx = (msgtype & 1) != 0;
-			if (nCHRx != CHRx) {
-				dev_warn(&spi->dev, "settings \"msgtype\" and \"receiver\" are contradictory. \"msgtype\" wins.\n");
-			}
-			CHRx = nCHRx;
-			rnw = (msgtype & 8) != 0;
-			rtr = (msgtype & 4) != 0;
-			CHTx = (msgtype & 2) != 0;
-		}
+			drak = true;
 
 		if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
 			dev_err(&spi->dev, "channel %u: missing 'tss463aa,msgpointer' in devicetree.\n", channel);
@@ -764,6 +756,8 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		}
 
 		return tss463aa_set_channel_up(spi, TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_SIZE * channel, idtag, idmask, CHTx, CHRx, msgpointer, msglen, ext, rak, rnw, rtr, drak);
+	} else {
+		priv->listeningchannels[channel] = false;
 	}
 	return 0;
 }
@@ -840,43 +834,43 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel0"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel1"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 1, of_get_child_by_name(dt_node, "channel1"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel2"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 2, of_get_child_by_name(dt_node, "channel2"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel3"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 3, of_get_child_by_name(dt_node, "channel3"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel4"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 4, of_get_child_by_name(dt_node, "channel4"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel5"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 5, of_get_child_by_name(dt_node, "channel5"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel6"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 6, of_get_child_by_name(dt_node, "channel6"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel7"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 7, of_get_child_by_name(dt_node, "channel7"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel8"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 8, of_get_child_by_name(dt_node, "channel8"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel9"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 9, of_get_child_by_name(dt_node, "channel9"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel10"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 10, of_get_child_by_name(dt_node, "channel10"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel11"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 11, of_get_child_by_name(dt_node, "channel11"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel12"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 12, of_get_child_by_name(dt_node, "channel12"));
 	if (ret)
 		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel13"));
+	ret = tss463aa_set_channel_up_from_dt(priv, 13, of_get_child_by_name(dt_node, "channel13"));
 	return ret;
 }
 
@@ -887,8 +881,7 @@ static int tss463aa_setup(struct tss463aa_priv *priv)
 	struct spi_device *spi = priv->spi;
 	u8 channel_offset;
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
-                /* Set RNW, RTR so that reception stays disabled on this channel. */
-		int ret = tss463aa_set_channel_up(spi, channel_offset, 0, 0, 1, 1, 0x7F, 0, 0/*ext*/, 0, 1, 1, 1);
+		int ret = tss463aa_set_channel_up(spi, channel_offset, 0, 0, true, true, 0x7F, 0, false/*ext*/, false, true, true, true);
 		if (ret)
 			return ret;
 		ret = tss463aa_hw_write(spi, channel_offset + 3, 7); /* Set CHTx, CHRx */
@@ -1195,7 +1188,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							channel_status |= 2; /* CHTx */
 							tss463aa_hw_write(spi, channel_offset + 3, channel_status);
 						}
-					} else {
+					} else if (priv->listeningchannels[channel_offset / TSS463AA_CHANNEL_SIZE]) { /* sanity check */
 						/* Allow receiving another message. */
 						tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ 1);
 					}
