@@ -96,6 +96,11 @@ But this here needs to fit address, control and status as well. */
 #define TSS463AA_RX_BUF_LEN 33
 #define TSS463AA_TX_BUF_LEN 33
 
+#define TSS463AA_CHANNEL0_OFFSET 0x10
+#define TSS463AA_CHANNEL1_OFFSET 0x18
+#define TSS463AA_CHANNEL_SIZE 0x08
+#define TSS463AA_CHANNEL_COUNT 14
+
 struct tss463aa_priv {
 	struct can_priv can; /* must be first member */
 	struct net_device *net;
@@ -315,11 +320,6 @@ static int tss463aa_hw_sleep(struct spi_device *spi)
 		dev_warn(&spi->dev, "could not send chip to sleep.\n");
 	return ret;
 }
-
-#define TSS463AA_CHANNEL0_OFFSET 0x10
-#define TSS463AA_CHANNEL1_OFFSET 0x18
-#define TSS463AA_CHANNEL_SIZE 0x08
-#define TSS463AA_CHANNEL_COUNT 14
 
 __attribute__((warn_unused_result))
 static u8 tss463aa_hw_match_channel(struct spi_device *spi, u16 idt, int rnw, int rtr, int use_rtr)
