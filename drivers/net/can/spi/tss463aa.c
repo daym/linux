@@ -86,7 +86,7 @@ enum tss463aa_model {
 	CAN_TSS463AA_TSS463AA = 0x4631,
 };
 
-/* TODO: CAN_CTRLMODE_BERR_REPORTING, CAN_CTRLMODE_LOOPBACK */
+/* TODO: CAN_CTRLMODE_LOOPBACK */
 /* TODO: Allow setting CAN FD "data" bit rate (which must be at least as high as the arbitration bitrate) */
 
 /* Note: These contain the sizes of the driver's SPI buffers.
