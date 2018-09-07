@@ -761,6 +761,37 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 	return 0;
 }
 
+static int tss463aa_set_channels_up_from_dt(struct spi_device *spi, struct device_node *dt_node)
+{
+	struct device_node *channels_node;
+	struct device_node *channel_node;
+	int ret;
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+
+	channels_node = of_get_child_by_name(dt_node, "tss463aa,channels");
+	if (channels_node) {
+		u8 i = 0;
+		for_each_child_of_node(channels_node, channel_node) {
+			if (i >= TSS463AA_CHANNEL_COUNT) {
+				dev_err(&spi->dev, "too many channels in device tree\n");
+				break;
+			}
+			ret = tss463aa_set_channel_up_from_dt(priv, i++, channel_node);
+			if (ret)
+				return ret;
+		}
+	} else { /* default setup */
+		bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
+		int ret = tss463aa_set_channel_up(spi, 0, 0, 0, true, false, 0, 31, true/*ext*/, false, false, true, drak);
+		if (ret)
+			return ret;
+		ret = tss463aa_set_channel_up(spi, 1, 0, 0, true, true, 32, 31, true/*ext*/, true, false, false, drak);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
 /* Given a DT node, sets up the TSS463AA accordingly.
 Precondition: Device is not up. */
 __attribute__((warn_unused_result))
@@ -830,51 +861,8 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 	if (ret)
 		return ret;
 
-	/* Set up channels */
-
-	ret = tss463aa_set_channel_up_from_dt(priv, 0, of_get_child_by_name(dt_node, "channel0"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 1, of_get_child_by_name(dt_node, "channel1"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 2, of_get_child_by_name(dt_node, "channel2"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 3, of_get_child_by_name(dt_node, "channel3"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 4, of_get_child_by_name(dt_node, "channel4"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 5, of_get_child_by_name(dt_node, "channel5"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 6, of_get_child_by_name(dt_node, "channel6"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 7, of_get_child_by_name(dt_node, "channel7"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 8, of_get_child_by_name(dt_node, "channel8"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 9, of_get_child_by_name(dt_node, "channel9"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 10, of_get_child_by_name(dt_node, "channel10"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 11, of_get_child_by_name(dt_node, "channel11"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 12, of_get_child_by_name(dt_node, "channel12"));
-	if (ret)
-		return ret;
-	ret = tss463aa_set_channel_up_from_dt(priv, 13, of_get_child_by_name(dt_node, "channel13"));
-	return ret;
+	return tss463aa_set_channels_up_from_dt(spi, dt_node);
 }
-
 
 __attribute__((warn_unused_result))
 static int tss463aa_setup(struct tss463aa_priv *priv)
