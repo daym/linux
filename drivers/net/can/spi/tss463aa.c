@@ -59,6 +59,7 @@
 /* TODO: Support aborting. */
 /* TODO: Handle changing ctrlmode (DRAK). */
 /* TODO: Handle disabled channels better. */
+/* TODO: Support ndo_tx_timeout (and abort there?). */
 /* Notes on "Reply" requests:
 
 We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "transmit"].
