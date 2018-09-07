@@ -97,7 +97,6 @@ But this here needs to fit address, control and status as well. */
 #define TSS463AA_TX_BUF_LEN 33
 
 #define TSS463AA_CHANNEL0_OFFSET 0x10
-#define TSS463AA_CHANNEL1_OFFSET 0x18
 #define TSS463AA_CHANNEL_SIZE 0x08
 #define TSS463AA_CHANNEL_COUNT 14
 
