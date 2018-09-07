@@ -745,7 +745,6 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 
 		bool ext = !of_property_read_bool(dt_node, "tss463aa,disable-recessive-ext");
 		bool listener = of_property_read_bool(dt_node, "tss463aa,listener");
-		bool drak = of_property_read_bool(dt_node, "tss463aa,disable-ack");
 		/*
 		RNW RTR CHTx CHRx Meaning
 		0   0   0    ?    Transmit Message
@@ -764,8 +763,7 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 
 		bool rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
 
-		if (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY)
-			drak = true;
+		bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
 
 		if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
 			dev_err(&spi->dev, "channel %u: missing 'tss463aa,msgpointer' in devicetree.\n", channel);
@@ -912,18 +910,29 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 }
 
 __attribute__((warn_unused_result))
-static int tss463aa_setup(struct tss463aa_priv *priv)
+static int tss463aa_clear_channels(struct spi_device *spi)
 {
-	struct spi_device *spi = priv->spi;
+	int ret;
 	u8 channel_offset;
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
-		int ret = tss463aa_set_channel_up(spi, channel_offset, 0, 0, true, true, 0x7F, 0, false/*ext*/, false, true, true, true);
+		int ret = tss463aa_set_channel_up(spi, channel_offset, 0, 0, true, true, 0x7F, 0, false/*ext*/, false, true, true, drak);
 		if (ret)
 			return ret;
-		ret = tss463aa_hw_write(spi, channel_offset + 3, 7); /* Set CHTx, CHRx */
+		ret = tss463aa_hw_write(spi, channel_offset + 3, TSS463AA_CHANNELFIELD3_CHTX | TSS463AA_CHANNELFIELD3_CHRX);
 		if (ret)
 			return ret;
 	}
+	return 0;
+}
+
+__attribute__((warn_unused_result))
+static int tss463aa_setup(struct spi_device *spi)
+{
+	int ret = tss463aa_clear_channels(spi);
+	if (ret)
+		return ret;
 	return tss463aa_set_up_from_dt(spi, spi->dev.of_node);
 }
 
@@ -961,9 +970,9 @@ static int tss463aa_stop(struct net_device *net)
 	mutex_lock(&priv->tss463aa_lock);
 
 	/* Disable transmission&reception, disable interrupts and clear flags. */
-	ret = tss463aa_hw_write(spi, TSS463AA_CHANNEL0_OFFSET + 3, 3); /* Note: Buffer length is killed */
+	ret = tss463aa_clear_channels(spi);
 	if (ret)
-		netdev_err(net, "could not stop.\n");
+		netdev_err(net, "could not clear channels.\n");
 	ret = tss463aa_hw_write(spi, TSS463AA_INTE, 0x0);
 	if (ret)
 		netdev_err(net, "could not stop.\n");
@@ -1018,7 +1027,7 @@ static void tss463aa_restart_work_handler(struct work_struct *ws)
 	if (priv->after_suspend) {
 		/* FIXME: Check for errors */
 		tss463aa_hw_reset(spi); /* wake it up */
-		tss463aa_setup(priv);
+		tss463aa_setup(spi);
 		if (priv->after_suspend & TSS463AA_AFTER_SUSPEND_RESTART) {
 			tss463aa_activate(spi);
 		} else if (priv->after_suspend & TSS463AA_AFTER_SUSPEND_UP) {
@@ -1037,7 +1046,7 @@ static void tss463aa_restart_work_handler(struct work_struct *ws)
 		priv->restart_tx = 0;
 		/* FIXME: Check for errors */
 		tss463aa_hw_reset(spi);
-		tss463aa_setup(priv);
+		tss463aa_setup(spi);
 		tss463aa_clean(net);
 		tss463aa_activate(spi);
 		netif_wake_queue(net);
@@ -1306,7 +1315,7 @@ static int tss463aa_open(struct net_device *net)
 	if (ret)
 		goto out_free_wq;
 
-	ret = tss463aa_setup(priv);
+	ret = tss463aa_setup(spi);
 	if (ret)
 		goto out_free_wq;
 
