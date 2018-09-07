@@ -1195,7 +1195,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 		//	new_state = CAN_STATE_ERROR_PASSIVE;
 		//	new_state = CAN_STATE_ERROR_WARNING;
 
-		if ((intf & TSS463AA_INTERRUPT_STATUS_RST) != ) {
+		if ((intf & TSS463AA_INTERRUPT_STATUS_RST) != 0) {
 			dev_dbg(&spi->dev, "chip reset happened.  Glitch?\n");
 			new_state = CAN_STATE_BUS_OFF;
 			/* TODO: can_restart(net); */
