@@ -1265,8 +1265,9 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							   it's possible that CHTx=0 because the TX message
 							   was never finished. This would mean we'd lose
 							   our ability to transmit.
-							   Restore it here and lose the TX message. */
-							channel_status |= 2; /* CHTx */
+							   Restore it here and lose the TX message.
+							   FIXME: Remove if possible. */
+							channel_status |= TSS463AA_CHANNELFIELD3_CHTX;
 							tss463aa_hw_write(spi, channel_offset + 3, channel_status);
 						}
 					} else if (priv->listeningchannels[channel_offset / TSS463AA_CHANNEL_SIZE]) { /* sanity check */
