@@ -111,7 +111,7 @@ struct tss463aa_priv {
 	__u32 xtal_clock_frequency;
 	/* Because of the shared buffer, each channel can only either send or receive at the same time.
 	In order to reduce complexity, just have each channel do either send or receive at all times.
-	As an exception, allow RNW RTR channels to SHORTLY receive - even though they usually transmit (this does not count as "listening"). */
+	As an exception, allow RNW RTR channels to SHORTLY receive - even though they usually transmit (this does count as "listening"). */
 	bool listeningchannels[TSS463AA_CHANNEL_COUNT];
 
 	struct mutex tss463aa_lock;
@@ -381,14 +381,19 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 			continue;
 		if ((status & TSS463AA_CHANNELFIELD3_CHTX) == 0) /* busy */
 			continue;
+		bool need_receiver_free = true; /* Not necessarily because we want to use it */
 		if (!priv->listeningchannels[channel]) {
-			if ((status & TSS463AA_CHANNELFIELD3_CHRX) != 0)
-				return channel_offset;
+			/* Normal channels EITHER transmit or receive, so this
+			   is only a sanity-check which should never fail. */
+			need_receiver_free = true;
 		} else if (rnw) {
-			/* We are replying to a "Reply" request */
-			/* TODO: Match EXACT channel we used before? */
-			return channel_offset;
+			/* "Reply" requests can actually use both RX and TX of the same channel. */
+			need_receiver_free = true;
 		}
+		/* FIXME: Is there a race about the receiver now? Probably. */
+		if (!need_receiver_free ||
+		    (status & TSS463AA_CHANNELFIELD3_CHRX) != 0) /* free */
+			return channel_offset;
 	}
 	return 0;
 }
@@ -777,6 +782,7 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 
 		bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
 
+		priv->listeningchannels[channel] = listener;
 		if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
 			dev_err(&spi->dev, "channel %u: missing 'tss463aa,msgpointer' in devicetree.\n", channel);
 			return -EINVAL;
