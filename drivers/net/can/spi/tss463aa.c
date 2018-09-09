@@ -381,15 +381,14 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 			if ((status & (TSS463AA_CHANNELFIELD3_CHRX |
 			               TSS463AA_CHANNELFIELD3_CHTX)) ==
 			    (TSS463AA_CHANNELFIELD3_CHRX |
-			     TSS463AA_CHANNELFIELD3_CHTX)) {
-				u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
-				if (ext == rext && channel_rnw == rnw)
-					return channel_offset;
-			}
+			     TSS463AA_CHANNELFIELD3_CHTX))
+				return channel_offset;
 		} else if (rnw) {
 			/* We are replying to a "Reply" request */
 			/* TODO: Match EXACT channel we used before? */
-			return channel_offset;
+			if ((status & TSS463AA_CHANNELFIELD3_CHTX) ==
+			    TSS463AA_CHANNELFIELD3_CHTX)
+				return channel_offset;
 		}
 	}
 	return 0;
