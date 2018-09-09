@@ -823,6 +823,7 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		return tss463aa_set_channel_up(spi, TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_SIZE * channel, idtag, idmask, CHTx, CHRx, msgpointer, msglen, ext, rak, rnw, rtr, drak);
 	} else {
 		priv->listeningchannels[channel] = false;
+		priv->immediate_reply_channels[channel] = false;
 	}
 	return 0;
 }
