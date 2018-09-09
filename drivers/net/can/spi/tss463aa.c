@@ -469,7 +469,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 		keep &= ~TSS463AA_CHANNELFIELD3_CHRX;
 	ret = tss463aa_hw_write(spi, channel_offset + 3,
 	                        (tss463aa_hw_read(spi, channel_offset + 3) & keep) |
-                                (len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT));
+                            (len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT));
 	return ret;
 }
 
