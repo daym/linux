@@ -355,30 +355,41 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 	u8 channel_offset;
 	u8 channel;
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
-	/* FIXME: Try to find and prefer an exact ID match (in order to support Reply messages) */
+	/* Note:
+	The datasheet claims that the RNW and RTR fields are not "compared",
+	but the EXT field is.
+
+	But the following has been observed (with TX disconnected!):
+
+	All messages received by a channel with RNW=0, RTR=1 have RNW=0, RTR=0.
+	All messages received by a channel with RNW=1, RTR=0 have RNW=1, RTR=0.
+	All messages received by a channel with RNW=1, RTR=1 have RNW=1, RTR=0.
+
+	So apparently the RNW is somehow taken into account, because why else
+	were other messages filtered out?
+	*/
+	/* TODO: Try to find and prefer an exact ID match. */
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET, channel = 0; channel < TSS463AA_CHANNEL_COUNT; channel_offset += TSS463AA_CHANNEL_SIZE, ++channel) {
+		u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
+		bool channel_rnw = (idthcmd & TSS463AA_CHANNELFIELD1_RNW) != 0;
+		bool channel_rtr = (idthcmd & TSS463AA_CHANNELFIELD1_RTR) != 0;
+		bool channel_ext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
+		if (channel_ext != ext || channel_rnw != rnw) /* NOT RTR */
+			continue;
+		u8 status = tss463aa_hw_read(spi, channel_offset + 3);
 		if (!priv->listeningchannels[channel]) {
-			u8 status = tss463aa_hw_read(spi, channel_offset + 3);
 			if ((status & (TSS463AA_CHANNELFIELD3_CHRX |
 			               TSS463AA_CHANNELFIELD3_CHTX)) ==
 			    (TSS463AA_CHANNELFIELD3_CHRX |
 			     TSS463AA_CHANNELFIELD3_CHTX)) {
 				u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
-				bool rext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
-				if (ext == rext)
+				if (ext == rext && channel_rnw == rnw)
 					return channel_offset;
 			}
-		} else {
-			u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
-			if ((idthcmd & (TSS463AA_CHANNELFIELD1_RNW |
-			                TSS463AA_CHANNELFIELD1_RTR)) ==
-			    TSS463AA_CHANNELFIELD1_RNW) {
-				/* We are replying to a "Reply" request */
-				/* FIXME: MATCH channel. */
-				bool rext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
-				if (ext == rext)
-					return channel_offset;
-			}
+		} else if (rnw) {
+			/* We are replying to a "Reply" request */
+			/* TODO: Match EXACT channel we used before? */
+			return channel_offset;
 		}
 	}
 	return 0;
