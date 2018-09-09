@@ -381,19 +381,11 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 			continue;
 		if ((status & TSS463AA_CHANNELFIELD3_CHTX) == 0) /* busy */
 			continue;
-		bool need_receiver_free = true; /* Not necessarily because we want to use it */
-		if (!priv->listeningchannels[channel]) {
-			/* Normal channels EITHER transmit or receive, so this
-			   is only a sanity-check which should never fail. */
-			need_receiver_free = true;
-		} else if (rnw) {
-			/* "Reply" requests can actually use both RX and TX of the same channel. */
-			need_receiver_free = true;
-		}
-		/* FIXME: Is there a race about the receiver now? Probably. */
-		if (!need_receiver_free ||
-		    (status & TSS463AA_CHANNELFIELD3_CHRX) != 0) /* free */
-			return channel_offset;
+		bool need_receiver_free = priv->listeningchannels[channel] && rnw;
+
+		/* This is racy - but a sanity check only. */
+		BUG_ON(need_receiver_free && (status & TSS463AA_CHANNELFIELD3_CHRX) == 0);
+		return channel_offset;
 	}
 	return 0;
 }
