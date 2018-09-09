@@ -111,7 +111,7 @@ struct tss463aa_priv {
 	__u32 xtal_clock_frequency;
 	/* Because of the shared buffer, each channel can only either send or receive at the same time.
 	In order to reduce complexity, just have each channel do either send or receive at all times.
-	As an exception, allow RNW RTR channels to SHORTLY receive - even though they usually transmit. */
+	As an exception, allow RNW RTR channels to SHORTLY receive - even though they usually transmit (this does not count as "listening"). */
 	bool listeningchannels[TSS463AA_CHANNEL_COUNT];
 
 	struct mutex tss463aa_lock;
@@ -369,26 +369,25 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 	were other messages filtered out?
 	*/
 	/* TODO: Try to find and prefer an exact ID match. */
-	for (channel_offset = TSS463AA_CHANNEL0_OFFSET, channel = 0; channel < TSS463AA_CHANNEL_COUNT; channel_offset += TSS463AA_CHANNEL_SIZE, ++channel) {
+	for (channel_offset = TSS463AA_CHANNEL0_OFFSET, channel = 0;
+	     channel < TSS463AA_CHANNEL_COUNT;
+	     channel_offset += TSS463AA_CHANNEL_SIZE, ++channel) {
 		u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
+		bool channel_ext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
 		bool channel_rnw = (idthcmd & TSS463AA_CHANNELFIELD1_RNW) != 0;
 		bool channel_rtr = (idthcmd & TSS463AA_CHANNELFIELD1_RTR) != 0;
-		bool channel_ext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
+		u8 status = tss463aa_hw_read(spi, channel_offset + 3);
 		if (channel_ext != ext || channel_rnw != rnw) /* NOT RTR */
 			continue;
-		u8 status = tss463aa_hw_read(spi, channel_offset + 3);
+		if ((status & TSS463AA_CHANNELFIELD3_CHTX) == 0) /* busy */
+			continue;
 		if (!priv->listeningchannels[channel]) {
-			if ((status & (TSS463AA_CHANNELFIELD3_CHRX |
-			               TSS463AA_CHANNELFIELD3_CHTX)) ==
-			    (TSS463AA_CHANNELFIELD3_CHRX |
-			     TSS463AA_CHANNELFIELD3_CHTX))
+			if ((status & TSS463AA_CHANNELFIELD3_CHRX) != 0)
 				return channel_offset;
 		} else if (rnw) {
 			/* We are replying to a "Reply" request */
 			/* TODO: Match EXACT channel we used before? */
-			if ((status & TSS463AA_CHANNELFIELD3_CHTX) ==
-			    TSS463AA_CHANNELFIELD3_CHTX)
-				return channel_offset;
+			return channel_offset;
 		}
 	}
 	return 0;
