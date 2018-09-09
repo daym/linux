@@ -114,6 +114,7 @@ struct tss463aa_priv {
 	As an exception, allow RNW RTR channels to SHORTLY receive - even though they usually transmit (this does count as "listening").
     This flag array mostly exists because we don't want to have races checking the actual CHRx - also, the CHRx can intermittently change while listeningchannels is a constant */
 	bool listeningchannels[TSS463AA_CHANNEL_COUNT];
+	bool immediate_reply_channels[TSS463AA_CHANNEL_COUNT];
 
 	struct mutex tss463aa_lock;
 
@@ -784,6 +785,7 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		}
 
 		priv->listeningchannels[channel] = listener;
+		priv->immediate_reply_channels[channel] = immediate_reply;
 		if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
 			dev_err(&spi->dev, "channel %u: missing 'tss463aa,msgpointer' in devicetree.\n", channel);
 			return -EINVAL;
@@ -1272,8 +1274,13 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							tss463aa_hw_write(spi, channel_offset + 3, channel_status);
 						}
 					} else if (priv->listeningchannels[channel_offset / TSS463AA_CHANNEL_SIZE]) { /* sanity check */
-						/* Allow receiving another message. */
-						tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ TSS463AA_CHANNELFIELD3_CHRX);
+						if (priv->immediate_reply_channels[channel_offset / TSS463AA_CHANNEL_SIZE]) {
+							/* Load the immediate reply again */
+							tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ (TSS463AA_CHANNELFIELD3_CHRX | TSS463AA_CHANNELFIELD3_CHTX));
+						} else {
+							/* Allow receiving another message. */
+							tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ TSS463AA_CHANNELFIELD3_CHRX);
+						}
 					}
 				} else if ((channel_status & TSS463AA_CHANNELFIELD3_CHTX) != 0) {
 					/* Record previous transmission stats */
