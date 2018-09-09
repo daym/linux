@@ -777,10 +777,18 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		bool rtr = of_property_read_bool(dt_node, "tss463aa,remote-transmission-request");
 		bool CHRx = !listener; /* CHRx: RX done */
 		bool CHTx = true; /* CHTx: TX done */
+		bool immediate_reply = of_property_read_bool(dt_node, "tss463aa,immediate-reply");
 
 		bool rak = of_property_read_bool(dt_node, "tss463aa,request-ack");
 
 		bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
+
+		if (immediate_reply) {
+			CHRx = false;
+			CHTx = false;
+			listener = true;
+			/* TODO: Load it again after it has been transmitted */
+		}
 
 		priv->listeningchannels[channel] = listener;
 		if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
