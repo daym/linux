@@ -258,7 +258,7 @@ static u8 tss463aa_hw_read(struct spi_device *spi, u8 reg)
 	priv->spi_tx_buf[2] = 0xFF; /* dummy value */
 	ret = tss463aa_spi_trans(spi, 3);
 	if (ret) {
-		dev_err(&spi->dev, "read failed.\n");
+		dev_err(&spi->dev, "hw_read failed.\n");
 		/* FIXME: Fail somehow? */
 		return 0;
 	}
@@ -277,7 +277,7 @@ static int tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
 	priv->spi_tx_buf[2] = val;
 	ret = tss463aa_spi_trans(spi, 3);
 	if (ret) {
-		dev_err(&spi->dev, "write failed.\n");
+		dev_err(&spi->dev, "hw_write failed.\n");
 		return ret;
 	}
 	/* Note: priv->spi_rx_buf[2] == 0xFF */
