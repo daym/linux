@@ -718,7 +718,7 @@ static int tss463aa_activate(struct spi_device *spi)
 }
 
 __attribute__((warn_unused_result))
-static int tss463aa_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
+static int tss463aa_hw_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
@@ -828,7 +828,7 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 			return -EINVAL;
 		}
 
-		return tss463aa_set_channel_up(spi, TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_SIZE * channel, idtag, idmask, CHTx, CHRx, msgpointer, msglen, ext, rak, rnw, rtr, drak);
+		return tss463aa_hw_set_channel_up(spi, TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_SIZE * channel, idtag, idmask, CHTx, CHRx, msgpointer, msglen, ext, rak, rnw, rtr, drak);
 	} else {
 		priv->listeningchannels[channel] = false;
 		priv->immediate_reply_channels[channel] = false;
@@ -857,10 +857,10 @@ static int tss463aa_set_channels_up_from_dt(struct spi_device *spi, struct devic
 		}
 	} else { /* default setup */
 		bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
-		int ret = tss463aa_set_channel_up(spi, 0, 0, 0, true, false, 0, 31, true/*ext*/, false, false, true, drak);
+		int ret = tss463aa_hw_set_channel_up(spi, 0, 0, 0, true, false, 0, 31, true/*ext*/, false, false, true, drak);
 		if (ret)
 			return ret;
-		ret = tss463aa_set_channel_up(spi, 1, 0, 0, true, true, 32, 31, true/*ext*/, true, false, false, drak);
+		ret = tss463aa_hw_set_channel_up(spi, 1, 0, 0, true, true, 32, 31, true/*ext*/, true, false, false, drak);
 		if (ret)
 			return ret;
 	}
@@ -949,7 +949,7 @@ static int tss463aa_clear_channels(struct spi_device *spi)
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
-		int ret = tss463aa_set_channel_up(spi, channel_offset, 0, 0, true, true, 0x7F, 0, false/*ext*/, false, true, true, drak);
+		int ret = tss463aa_hw_set_channel_up(spi, channel_offset, 0, 0, true, true, 0x7F, 0, false/*ext*/, false, true, true, drak);
 		if (ret)
 			return ret;
 		ret = tss463aa_hw_write(spi, channel_offset + 3, TSS463AA_CHANNELFIELD3_CHTX | TSS463AA_CHANNELFIELD3_CHRX);
