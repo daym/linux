@@ -949,7 +949,9 @@ static int tss463aa_clear_channels(struct spi_device *spi)
 	u8 channel_offset;
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
-	for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
+	for (channel_offset = TSS463AA_CHANNEL0_OFFSET;
+	     channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE;
+	     channel_offset += TSS463AA_CHANNEL_SIZE) {
 		int ret = tss463aa_hw_set_channel_up(spi, channel_offset, 0, 0, true, true, 0x7F, 0, false/*ext*/, false, true, true, drak);
 		if (ret)
 			return ret;
