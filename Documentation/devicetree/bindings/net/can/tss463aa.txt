@@ -37,7 +37,7 @@ or RXD2 depending on the diagnosis state.
 - tss463aa,enable-system-diagnosis: Enables system diagnosis.
 - tss463aa,enable-transmission-diagnosis: Enables transmission diagnosis.
 
-Child nodes of the above node (channel setup):
+Child nodes of the "channels" node:
 
 - tss463aa,disable-recessive-ext: Makes the EXT bit on the VAN bus not
 recessive.  This is non-standard.  Do not use.
