@@ -212,13 +212,12 @@ static int tss463aa_spi_trans(struct spi_device *spi, int len)
 		dev_err(&spi->dev, "SPI transfer failed: ret = %d\n", ret);
 	} else if (priv->spi_tx_buf[0] == 0 && priv->spi_tx_buf[1] == 0) {
 		/* Reset 1 */
-	} else if (priv->spi_tx_buf[0] == 0xFF && priv->spi_tx_buf[1] == 0xFF) {		/* Reset 2 */
+	} else if (priv->spi_tx_buf[0] == 0xFF && priv->spi_tx_buf[1] == 0xFF) {
+		/* Reset 2 */
+	} else if (!priv->aa55) {
+	} else if (priv->spi_rx_buf[0] == 0xAA || priv->spi_rx_buf[1] == 0x55) {
 	} else {
-		if (!priv->aa55) {
-		} else if (priv->spi_rx_buf[0] == 0xAA || priv->spi_rx_buf[1] == 0x55) {
-		} else {
-			dev_err(&spi->dev, "chip is out of sync\n");
-		}
+		dev_err(&spi->dev, "chip is out of sync\n");
 	}
 	return ret;
 }
