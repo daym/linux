@@ -340,6 +340,37 @@ static int tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* o
 	return 0;
 }
 
+__attribute__((warn_unused_result))
+static int tss463aa_hw_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+
+	priv->spi_tx_buf[0] = offset;
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
+	priv->spi_tx_buf[2] = idtag >> 4;
+	priv->spi_tx_buf[3] = (idtag << TSS463AA_CHANNELFIELD1_IDTL_SHIFT) |
+	                      (ext ? TSS463AA_CHANNELFIELD1_EXT : 0) |
+	                      (rak ? TSS463AA_CHANNELFIELD1_RAK : 0) |
+	                      (rnw ? TSS463AA_CHANNELFIELD1_RNW : 0) |
+	                      (rtr ? TSS463AA_CHANNELFIELD1_RTR : 0);
+	priv->spi_tx_buf[4] = (drak ? TSS463AA_CHANNELFIELD2_DRAK : 0) |
+	                      (msgpointer << TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT);
+	priv->spi_tx_buf[5] = (CHTx ? TSS463AA_CHANNELFIELD3_CHTX : 0) |
+	                      (CHRx ? TSS463AA_CHANNELFIELD3_CHRX : 0) |
+	                      (msglen << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT); /* Note: Clears error, too. */
+	if (tss463aa_spi_trans(spi, 6))
+		return -EIO;
+	priv->spi_tx_buf[0] = offset + 6;
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
+	priv->spi_tx_buf[2] = idmask >> 4;
+	priv->spi_tx_buf[3] = idmask << TSS463AA_CHANNELFIELD7_IDM_SHIFT;
+	if (tss463aa_spi_trans(spi, 4))
+		return -EIO;
+
+	return 0;
+}
+
+
 #define TSS463AA_COMMAND 3
 #define TSS463AA_COMMAND_SLEEP BIT(6)
 #define TSS463AA_COMMAND_IDLE BIT(5)
@@ -714,36 +745,6 @@ static int tss463aa_activate(struct spi_device *spi)
 		return ret;
 
 	priv->can.state = CAN_STATE_ERROR_ACTIVE;
-	return 0;
-}
-
-__attribute__((warn_unused_result))
-static int tss463aa_hw_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
-{
-	struct tss463aa_priv *priv = spi_get_drvdata(spi);
-
-	priv->spi_tx_buf[0] = offset;
-	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
-	priv->spi_tx_buf[2] = idtag >> 4;
-	priv->spi_tx_buf[3] = (idtag << TSS463AA_CHANNELFIELD1_IDTL_SHIFT) |
-	                      (ext ? TSS463AA_CHANNELFIELD1_EXT : 0) |
-	                      (rak ? TSS463AA_CHANNELFIELD1_RAK : 0) |
-	                      (rnw ? TSS463AA_CHANNELFIELD1_RNW : 0) |
-	                      (rtr ? TSS463AA_CHANNELFIELD1_RTR : 0);
-	priv->spi_tx_buf[4] = (drak ? TSS463AA_CHANNELFIELD2_DRAK : 0) |
-	                      (msgpointer << TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT);
-	priv->spi_tx_buf[5] = (CHTx ? TSS463AA_CHANNELFIELD3_CHTX : 0) |
-	                      (CHRx ? TSS463AA_CHANNELFIELD3_CHRX : 0) |
-	                      (msglen << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT); /* Note: Clears error, too. */
-	if (tss463aa_spi_trans(spi, 6))
-		return -EIO;
-	priv->spi_tx_buf[0] = offset + 6;
-	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
-	priv->spi_tx_buf[2] = idmask >> 4;
-	priv->spi_tx_buf[3] = idmask << TSS463AA_CHANNELFIELD7_IDM_SHIFT;
-	if (tss463aa_spi_trans(spi, 4))
-		return -EIO;
-
 	return 0;
 }
 
