@@ -140,6 +140,7 @@ struct tss463aa_priv {
 	struct regulator *power;
 	struct clk *clk;
 	struct gpio_desc *reset;
+	bool aa55_sync;
 };
 
 static void tss463aa_clean(struct net_device *net)
@@ -207,10 +208,17 @@ static int tss463aa_spi_trans(struct spi_device *spi, int len)
 	spi_message_add_tail(&t_control, &m);
 	spi_message_add_tail(&t_body, &m);
 	ret = spi_sync(spi, &m);
-	if (ret)
+	if (ret) {
 		dev_err(&spi->dev, "SPI transfer failed: ret = %d\n", ret);
-	else if (priv->spi_tx_buf[1] && (priv->spi_rx_buf[0] != 0xAA || priv->spi_rx_buf[1] != 0x55)) { /* Note: not on reset */
-		dev_err(&spi->dev, "chip is out of sync\n");
+	} else if (priv->spi_tx_buf[0] == 0 && priv->spi_tx_buf[1] == 0) {
+		/* Reset 1 */
+	} else if (priv->spi_tx_buf[0] == 0xFF && priv->spi_tx_buf[1] == 0xFF) {		/* Reset 2 */
+	} else {
+		if (!priv->aa55) {
+		} else if (priv->spi_rx_buf[0] == 0xAA || priv->spi_rx_buf[1] == 0x55) {
+		} else {
+			dev_err(&spi->dev, "chip is out of sync\n");
+		}
 	}
 	return ret;
 }
@@ -914,6 +922,8 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 		dev_warn(&spi->dev, "Value of 'tss463aa,diagnostic-mode' is invalid. Clamping.\n");
 		return -EINVAL;
 	}
+
+	priv->aa55_sync = !of_property_read_bool(dt_node, "tss463aa,crystal-clock");
 
 	ret = tss463aa_hw_write(spi, TSS463AA_DIAGNOSTIC_CONTROL,
 	                     (tss463aa_hw_read(spi, TSS463AA_DIAGNOSTIC_CONTROL) &~
