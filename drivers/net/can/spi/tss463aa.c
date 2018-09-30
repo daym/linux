@@ -161,7 +161,7 @@ static void tss463aa_clean(struct net_device *net)
 #define XTAL_us(cycles) DIV_ROUND_UP(((cycles)*1000000), priv->xtal_clock_frequency)
 
 __attribute__((warn_unused_result))
-static int tss463aa_spi_trans(struct spi_device *spi, int len)
+static int tss463aa_hw_spi_trans(struct spi_device *spi, int len)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	BUG_ON(len < 2);
@@ -240,7 +240,7 @@ static int tss463aa_hw_reset(struct spi_device *spi)
 	/* Perform soft reset and set up Motorola SPI mode */
 	priv->spi_tx_buf[0] = 0;
 	priv->spi_tx_buf[1] = 0;
-	ret = tss463aa_spi_trans(spi, 2);
+	ret = tss463aa_hw_spi_trans(spi, 2);
 	if (ret)
 		dev_err(&spi->dev, "soft reset failed.\n");
 	return ret;
@@ -266,7 +266,7 @@ static u8 tss463aa_hw_read(struct spi_device *spi, u8 reg)
 	priv->spi_tx_buf[0] = reg;
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
 	priv->spi_tx_buf[2] = 0xFF; /* dummy value */
-	ret = tss463aa_spi_trans(spi, 3);
+	ret = tss463aa_hw_spi_trans(spi, 3);
 	if (ret) {
 		dev_err(&spi->dev, "hw_read failed.\n");
 		/* FIXME: Fail somehow? */
@@ -285,7 +285,7 @@ static int tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
 	priv->spi_tx_buf[0] = reg;
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
 	priv->spi_tx_buf[2] = val;
-	ret = tss463aa_spi_trans(spi, 3);
+	ret = tss463aa_hw_spi_trans(spi, 3);
 	if (ret) {
 		dev_err(&spi->dev, "hw_write failed.\n");
 		return ret;
@@ -329,7 +329,7 @@ static int tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* o
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
 	priv->spi_tx_buf[2] = 0xFF;
 	priv->spi_tx_buf[3] = 0xFF;
-	ret = tss463aa_spi_trans(spi, 4);
+	ret = tss463aa_hw_spi_trans(spi, 4);
 	if (ret)
 		return ret;
 	*out_id = (priv->spi_rx_buf[2] << 4) |
@@ -358,13 +358,13 @@ static int tss463aa_hw_set_channel_up(struct spi_device *spi, u8 offset, u16 idt
 	priv->spi_tx_buf[5] = (CHTx ? TSS463AA_CHANNELFIELD3_CHTX : 0) |
 	                      (CHRx ? TSS463AA_CHANNELFIELD3_CHRX : 0) |
 	                      (msglen << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT); /* Note: Clears error, too. */
-	if (tss463aa_spi_trans(spi, 6))
+	if (tss463aa_hw_spi_trans(spi, 6))
 		return -EIO;
 	priv->spi_tx_buf[0] = offset + 6;
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
 	priv->spi_tx_buf[2] = idmask >> 4;
 	priv->spi_tx_buf[3] = idmask << TSS463AA_CHANNELFIELD7_IDM_SHIFT;
-	if (tss463aa_spi_trans(spi, 4))
+	if (tss463aa_hw_spi_trans(spi, 4))
 		return -EIO;
 
 	return 0;
@@ -448,7 +448,7 @@ static int tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_offset, u8 *b
 	if (len > msglen - 1) /* 1: The dummy above */
 		len = msglen - 1;
 	memcpy(priv->spi_tx_buf + 3, buf, len);
-	return tss463aa_spi_trans(spi, len + 3);
+	return tss463aa_hw_spi_trans(spi, len + 3);
 }
 
 /* Precondition: Buffer is not occupied */
@@ -525,7 +525,7 @@ static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
 	priv->spi_tx_buf[0] = msgpointer;
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
 	memset(priv->spi_tx_buf + 2, 0, len);
-	return tss463aa_spi_trans(spi, TSS463AA_RX_BUF_LEN);
+	return tss463aa_hw_spi_trans(spi, TSS463AA_RX_BUF_LEN);
 	/* Note: status = priv->spi_rx_buf[2]; */
 }
 
