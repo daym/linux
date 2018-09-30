@@ -10,6 +10,52 @@ Required properties:
 - clock: phandle and clock specifier.
 - channels: List of channel configurations.
 
+Optional:
+- tss463aa,crystal-clock: When using a crystal clock, the TSS463AA cannot send
+the Bytes [0xAA, 0x55] it otherwise would send in order to give the client a
+chance to keep synchronized with the TSS463AA.
+- tss463aa,inverted-rx: The RX on the TSS463AA is connected in a way that
+the actual level is inverted compared to the level on the VAN bus.
+- tss463aa,invert-tx: The TX on the TSS463AA is connected in a way that
+the actual level on the VAN bus will be inverted compared to it.
+- tss463aa,pulse-coded-modulation: The TSS463AA is connected to the VAN bus
+via an optical or radio link (the TSS463AA uses pulsed coding).
+- tss463aa,transmission-retry-count: How often to retry transmissions.  Not
+to retry transmissions (0) means to make one transmission attempt.
+- tss463aa,autonomous: The TSS463AA will transmit Start-Of-Frame sequences.
+If in doubt, DO NOT enable this.
+- tss463aa,diagnostic-mode: The TSS463AA has multiple different failover
+modes.  TSS463AA_DIAGNOSTIC_MODE_RXD0 means it will use the input RXD0
+(assumed to be the differential input).
+TSS463AA_DIAGNOSTIC_MODE_RXD2 means it will use the input RXD2 (assumed
+to be the inverted input).
+TSS463AA_DIAGNOSTIC_MODE_RXD1 means it will use the input RXD1 (assumed
+to be the non-inverted input).
+TSS463AA_DIAGNOSTIC_MODE_AUTO means it will automatically switch between
+these modes, preferring RXD0, then failing over to either either RXD1
+or RXD2 depending on the diagnosis state.
+- tss463aa,enable-system-diagnosis: Enables system diagnosis.
+- tss463aa,enable-transmission-diagnosis: Enables transmission diagnosis.
+
+Child nodes of the above node (channel setup):
+
+- tss463aa,disable-recessive-ext: Makes the EXT bit on the VAN bus not
+recessive.  This is non-standard.  Do not use.
+- tss463aa,listener: This channel is a listener.
+- tss463aa,rnw: This channel is for Reply requests.
+- tss463aa,remote-transmission-request: This channel requests remote
+transmission.  Do set it on listening channels.
+- tss463aa,immediate-reply: This channel already has data that will be sent
+immediately without any CPU involvement (if requested by a VAN bus node).
+- tss463aa,request-ack: This channel requests acknowledgements from the
+receivers.
+- tss463aa,msgpointer: The pointer of the start of the buffer for payload
+data for this channel in the TSS463AA's RAM.
+- tss463aa,msglen: The length of the buffer for payload data for this
+channel in the TSS463AA's RAM.
+- tss463aa,idtag: The tag to match / send on this channel.
+- tss463aa,idmask: The mask to match tags with on this channel.
+
 Example
 -------
 
