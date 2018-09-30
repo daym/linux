@@ -1132,7 +1132,8 @@ static void tss463aa_update_can_error(struct tss463aa_priv *priv, struct can_fra
 		u8 transmission_status = tss463aa_hw_read(spi, TSS463AA_TRANSMISSION_STATUS);
 		u8 idt = ((transmission_status & TSS463AA_TRANSMISSION_STATUS_IDT_MASK) >> TSS463AA_TRANSMISSION_STATUS_IDT_SHIFT);
 		u8 nrt = ((transmission_status & TSS463AA_TRANSMISSION_STATUS_NRT_MASK) >> TSS463AA_TRANSMISSION_STATUS_NRT_SHIFT);
-		/* FIXME: Check whether this still works when TE is asserted! */		cf->data[5] = idt; /* controller specific */
+		/* FIXME: Check whether this still works when TE is asserted! */
+		cf->data[5] = idt; /* controller specific */
 		cf->data[6] = nrt; /* controller specific */
 	}
 
