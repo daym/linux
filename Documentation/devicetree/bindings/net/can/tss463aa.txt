@@ -53,6 +53,8 @@ receivers.
 data for this channel in the TSS463AA's Message DATA RAM.
 - tss463aa,msglen: The length of the buffer for payload data for this
 channel in the TSS463AA's Message DATA RAM.
+- tss463aa,link: When present, defines this channel to be a link to
+another channel.  Note: Links are followed only once (no chains).
 - tss463aa,idtag: The tag to match / send on this channel.
 - tss463aa,idmask: The mask to match tags with on this channel.
 

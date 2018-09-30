@@ -55,7 +55,6 @@
 
 /* TODO: Handle TX error some more. */
 /* TODO: Support EXT some more. */
-/* TODO: Support linked channels. */
 /* TODO: Support rearbitration. */
 /* TODO: Support aborting. */
 /* TODO: Handle disabled channels better. */
@@ -795,21 +794,30 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 
 		priv->listeningchannels[channel] = listener;
 		priv->immediate_reply_channels[channel] = immediate_reply;
-		if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
-			dev_err(&spi->dev, "channel %u: missing 'tss463aa,msgpointer' in devicetree.\n", channel);
-			return -EINVAL;
-		}
-		if (msgpointer > 127) {
-			dev_err(&spi->dev, "channel %u: invalid 'tss463aa,msgpointer' in devicetree.\n", channel);
-			return -EINVAL;
-		}
-		if (of_property_read_u8(dt_node, "tss463aa,msglen", &msglen)) {
-			dev_err(&spi->dev, "channel %u: missing 'tss463aa,msglen' in devicetree.\n", channel);
-			return -EINVAL;
-		}
-		if (msglen >= 32 || msglen >= TSS463AA_RX_BUF_LEN || msglen >= TSS463AA_TX_BUF_LEN) { /* FIXME: Fix one-off ? */
-			dev_err(&spi->dev, "channel %u: invalid 'tss463aa,msglen' in devicetree.\n", channel);
-			return -EINVAL;
+
+		if (of_property_read_u8(dt_node, "tss463aa,link", &msgpointer) == 0) {
+			msglen = 0;
+			if (msgpointer > TSS463AA_CHANNEL_COUNT) {
+				dev_err(&spi->dev, "channel %u: invalid 'tss463aa,link' in devicetree.\n", channel);
+				return -EINVAL;
+			}
+		} else {
+			if (of_property_read_u8(dt_node, "tss463aa,msgpointer", &msgpointer)) {
+				dev_err(&spi->dev, "channel %u: missing 'tss463aa,msgpointer' in devicetree.\n", channel);
+				return -EINVAL;
+			}
+			if (msgpointer > 127) {
+				dev_err(&spi->dev, "channel %u: invalid 'tss463aa,msgpointer' in devicetree.\n", channel);
+				return -EINVAL;
+			}
+			if (of_property_read_u8(dt_node, "tss463aa,msglen", &msglen)) {
+				dev_err(&spi->dev, "channel %u: missing 'tss463aa,msglen' in devicetree.\n", channel);
+				return -EINVAL;
+			}
+			if (msglen >= 32 || msglen >= TSS463AA_RX_BUF_LEN || msglen >= TSS463AA_TX_BUF_LEN || msglen == 0) { /* FIXME: Fix one-off ? */
+				dev_err(&spi->dev, "channel %u: invalid 'tss463aa,msglen' in devicetree.\n", channel);
+				return -EINVAL;
+			}
 		}
 
 		if (of_property_read_u16(dt_node, "tss463aa,idtag", &idtag)) {
