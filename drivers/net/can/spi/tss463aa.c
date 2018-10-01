@@ -495,7 +495,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 		keep &= ~TSS463AA_CHANNELFIELD3_CHRX;
 	ret = tss463aa_hw_write(spi, channel_offset + 3,
 	                        (tss463aa_hw_read(spi, channel_offset + 3) & keep) |
-                            (len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT));
+	                        (len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT));
 	return ret;
 }
 
@@ -746,9 +746,9 @@ static int tss463aa_activate(struct spi_device *spi)
 	int ret;
 
 	ret = tss463aa_hw_write(spi, TSS463AA_INTE, TSS463AA_INTE_TXERR |
-		                     TSS463AA_INTE_TXERR | TSS463AA_INTE_TXOK |
-		                     TSS463AA_INTE_RXERR | TSS463AA_INTE_RXOK |
-		                     TSS463AA_INTE_RXNOK);
+	                             TSS463AA_INTE_TXERR | TSS463AA_INTE_TXOK |
+	                             TSS463AA_INTE_RXERR | TSS463AA_INTE_RXOK |
+	                             TSS463AA_INTE_RXNOK);
 	if (ret)
 		return ret;
 
