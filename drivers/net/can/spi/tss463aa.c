@@ -963,9 +963,6 @@ static int tss463aa_clear_channels(struct spi_device *spi)
 		int ret = tss463aa_hw_set_channel_up(spi, channel_offset, 0, 0, true, true, 0x7F, 0, false/*ext*/, false, true, true, drak);
 		if (ret)
 			return ret;
-		ret = tss463aa_hw_write(spi, channel_offset + 3, TSS463AA_CHANNELFIELD3_CHTX | TSS463AA_CHANNELFIELD3_CHRX);
-		if (ret)
-			return ret;
 	}
 	return 0;
 }
