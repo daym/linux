@@ -234,8 +234,7 @@ static int tss463aa_hw_reset(struct spi_device *spi)
 __attribute__((warn_unused_result))
 static int tss463aa_hw_probe(struct spi_device *spi)
 {
-	tss463aa_hw_reset(spi);
-	return 0;
+	return tss463aa_hw_reset(spi);
 }
 
 #define TSS463AA_REGISTER_READ 0x60
