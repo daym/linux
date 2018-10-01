@@ -801,6 +801,8 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 		if (immediate_reply) {
 			CHRx = false;
 			CHTx = false;
+			if (!listener)
+				dev_warn(&spi->dev, "channel %u: Set up to immediately reply but not listen (via devicetree).  Hint: Try adding 'tss463aa,listener'.\n", channel);
 			listener = true;
 		}
 
