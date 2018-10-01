@@ -838,7 +838,7 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 			dev_err(&spi->dev, "channel %u: missing 'tss463aa,idtag' in devicetree.\n", channel);
 			return -EINVAL;
 		}
-		if (idmask > 0xFFF) {
+		if (idtag > 0xFFF) {
 			dev_err(&spi->dev, "channel %u: invalid 'tss463aa,idtag' in devicetree.\n", channel);
 			return -EINVAL;
 		}
