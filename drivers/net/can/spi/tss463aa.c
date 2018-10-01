@@ -1246,6 +1246,9 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 		enum can_state new_state;
 
 		intf = tss463aa_hw_read(spi, TSS463AA_INTERRUPT_STATUS) & TSS463AA_INTERRUPT_STATUS_MASK;
+		if (intf == 0)
+			break;
+
 		tss463aa_hw_write(spi, TSS463AA_INTERRUPT_RESET, TSS463AA_INTERRUPT_RESET_MASK); /* clear pending interrupt */
 
 		/* There's no interrupt for line_status, so take what we can get. */
@@ -1285,9 +1288,6 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 				}
 			}
 		}
-
-		if (intf == 0)
-			break;
 
 		if (intf & (TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK | TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE))
 			for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
