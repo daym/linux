@@ -511,7 +511,7 @@ static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
 		return -E2BIG;
 	}
 	if (len < 1) {
-		dev_warn(&spi->dev, "channel cannot receive payload - buffer space is not available.\n");
+		dev_warn(&spi->dev, "channel cannot receive even the status - buffer space is not available.\n");
 		return -E2BIG;
 	}
 
@@ -537,11 +537,7 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
 		return ret;
 	buf = priv->spi_rx_buf + 2;
 
-	u8 msglen = buf[0] & 0x1F;
-	u8 dlen;
-	if (msglen == 0)
-		dev_warn(&spi->dev, "internal error: received message contained M_L==0 - which should be impossible.\n");
-	dlen = msglen ? msglen - 1 : 0;
+	u8 dlen = buf[0] & 0x1F;
 	if (dlen > CANFD_MAX_DLEN) {
 		dev_warn(&spi->dev, "received message was too long - ignored.\n");
 		return -E2BIG;
