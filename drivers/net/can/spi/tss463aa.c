@@ -802,7 +802,6 @@ static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 chan
 			CHRx = false;
 			CHTx = false;
 			listener = true;
-			/* TODO: Load it again after it has been transmitted */
 		}
 
 		priv->listeningchannels[channel] = listener;
