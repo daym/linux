@@ -999,11 +999,13 @@ static int tss463aa_power_enable(struct spi_device *spi, struct regulator *reg, 
 
 	if (enable) {
 		int ret = regulator_enable(reg);
-		dev_err(&spi->dev, "could not enable chip power.\n");
+		if (ret)
+			dev_err(&spi->dev, "could not enable chip power.\n");
 		return ret;
 	} else {
 		int ret = regulator_disable(reg);
-		dev_err(&spi->dev, "could not disable chip power.\n");
+		if (ret)
+			dev_err(&spi->dev, "could not disable chip power.\n");
 		return ret;
 	}
 }
