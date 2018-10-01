@@ -92,7 +92,7 @@ enum tss463aa_model {
 
 /* Note: These contain the sizes of the driver's SPI buffers.
 The chip buffer can't hold more than 31 Byte.
-But this here needs to fit address, control as well. */
+But this here needs to fit "address" and "control" as well. */
 
 #define TSS463AA_RX_BUF_LEN 33
 #define TSS463AA_TX_BUF_LEN 33
