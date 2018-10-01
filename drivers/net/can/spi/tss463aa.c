@@ -510,6 +510,10 @@ static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
 		dev_warn(&spi->dev, "received message was too long - ignored.\n");
 		return -E2BIG;
 	}
+	if (len < 1) {
+		dev_warn(&spi->dev, "channel cannot receive payload - buffer space is not available.\n");
+		return -E2BIG;
+	}
 
 	priv->spi_tx_buf[0] = msgpointer;
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
