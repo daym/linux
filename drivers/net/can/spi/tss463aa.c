@@ -1315,6 +1315,8 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 				}
 				if ((channel_status & TSS463AA_CHANNELFIELD3_CHRX) != 0) { /* RX occupied */
 					// TODO: Check TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK ?
+					/* WARNING: Make sure that this requests CHRx at the end or otherwise avoid duplicates. */
+
 					u16 id = 0;
 					u8 setup = 0;
 					int ret;
@@ -1341,7 +1343,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							channel_status |= TSS463AA_CHANNELFIELD3_CHTX;
 							tss463aa_hw_write(spi, channel_offset + 3, channel_status);
 						}
-					} else if (priv->listeningchannels[channel_offset / TSS463AA_CHANNEL_SIZE]) { /* sanity check */
+					} else if (priv->listeningchannels[channel_offset / TSS463AA_CHANNEL_SIZE]) {
 						if (priv->immediate_reply_channels[channel_offset / TSS463AA_CHANNEL_SIZE]) {
 							/* Load the immediate reply again */
 							tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ (TSS463AA_CHANNELFIELD3_CHRX | TSS463AA_CHANNELFIELD3_CHTX));
