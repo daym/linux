@@ -402,7 +402,7 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 		bool channel_rnw = (idthcmd & TSS463AA_CHANNELFIELD1_RNW) != 0;
 		bool channel_rtr = (idthcmd & TSS463AA_CHANNELFIELD1_RTR) != 0;
 		u8 status = tss463aa_hw_read(spi, channel_offset + 3);
-		if (channel_ext != ext || channel_rnw != rnw) /* NOT RTR */
+		if (channel_ext != ext || channel_rnw != rnw) /* Note: NOT RTR */
 			continue;
 		if ((status & TSS463AA_CHANNELFIELD3_CHTX) == 0) /* busy */
 			continue;
