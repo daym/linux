@@ -514,7 +514,7 @@ static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
 	priv->spi_tx_buf[0] = msgpointer;
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
 	memset(priv->spi_tx_buf + 2, 0, len);
-	return tss463aa_hw_spi_trans(spi, TSS463AA_RX_BUF_LEN);
+	return tss463aa_hw_spi_trans(spi, len + 2);
 	/* Note: status = priv->spi_rx_buf[2]; */
 }
 
