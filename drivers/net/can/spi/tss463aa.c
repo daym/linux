@@ -53,7 +53,6 @@
 /* "Reply" request, f.e. read-register. */
 #define CANFD_RNW 0x40
 
-/* TODO: Handle TX error some more. */
 /* TODO: Support EXT some more. */
 /* TODO: Support rearbitration. */
 /* TODO: Support aborting. */
@@ -464,7 +463,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	if (!channel_offset) {
 		dev_err(&spi->dev, "cannot transmit message to %X since no channels are free.\n", idt);
 		/* FIXME: Retry */
-		return -ENOENT;
+		return -EBUSY;
 	}
 
 	ret = tss463aa_hw_write(spi, channel_offset, idt >> 4);
@@ -1069,12 +1068,19 @@ static void tss463aa_tx_work_handler(struct work_struct *ws)
 		if (priv->can.state == CAN_STATE_BUS_OFF) {
 			tss463aa_clean(net);
 		} else {
+			int ret;
 			frame = (struct canfd_frame *)priv->tx_skb->data;
-			/* FIXME: Check for errors */
-			tss463aa_hw_tx(spi, frame);
-			priv->tx_len = 1 + frame->len; /* FIXME */
-			can_put_echo_skb(priv->tx_skb, net, 0);
-			priv->tx_skb = NULL;
+			ret = tss463aa_hw_tx(spi, frame);
+			if (ret == -EBUSY) {
+				/* See interrupt handler for the case where it retries. */
+			} else if (ret) { /* error */
+				/* TODO: Try again later queue_work(priv->wq, &priv->tx_work); */
+				/* FIXME: Handle error here. */
+			} else {
+				priv->tx_len = 1 + frame->len; /* FIXME */
+				can_put_echo_skb(priv->tx_skb, net, 0);
+				priv->tx_skb = NULL;
+			}
 		}
 	}
 	mutex_unlock(&priv->tss463aa_lock);
@@ -1345,7 +1351,12 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							priv->tx_len = 0;
 						}
 						/* Allow new transmission */
-						netif_wake_queue(net);
+						if (!priv->tx_skb)
+							netif_wake_queue(net);
+					}
+					if (priv->tx_skb) { /* We were busy before and a message is still pending. */
+						/* Note: netif_stop_queue(net); */
+						queue_work(priv->wq, &priv->tx_work);
 					}
 				}
 			}
