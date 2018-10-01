@@ -111,7 +111,7 @@ struct tss463aa_priv {
 	/* Because of the shared buffer, each channel can only either send or receive at the same time.
 	In order to reduce complexity, just have each channel do either send or receive at all times.
 	As an exception, allow RNW RTR channels to SHORTLY receive - even though they usually transmit (this does count as "listening").
-    This flag array mostly exists because we don't want to have races checking the actual CHRx - also, the CHRx can intermittently change while listeningchannels is a constant */
+	This flag array mostly exists because we don't want to have races checking the actual CHRx - also, the CHRx can intermittently change while listeningchannels is a constant */
 	bool listeningchannels[TSS463AA_CHANNEL_COUNT];
 	bool immediate_reply_channels[TSS463AA_CHANNEL_COUNT];
 
