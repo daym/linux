@@ -34,8 +34,8 @@ to be the non-inverted input).
 TSS463AA_DIAGNOSTIC_MODE_AUTO means it will automatically switch between
 these modes, preferring RXD0, then failing over to either either RXD1
 or RXD2 depending on the diagnosis state.
-- tss463aa,enable-system-diagnosis: Enables system diagnosis.
-- tss463aa,enable-transmission-diagnosis: Enables transmission diagnosis.
+- tss463aa,disable-system-diagnosis: Disables system diagnosis.
+- tss463aa,disable-transmission-diagnosis: Disables transmission diagnosis.
 
 Child nodes of the "channels" node:
 

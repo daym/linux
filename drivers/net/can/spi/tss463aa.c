@@ -963,10 +963,10 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 	                       TSS463AA_DIAGNOSTIC_CONTROL_ETIP |
 	                       TSS463AA_DIAGNOSTIC_CONTROL_M_MASK |
 	                       TSS463AA_DIAGNOSTIC_CONTROL_SDC_MASK)) |
-	                     (of_property_read_bool(dt_node, "tss463aa,enable-system-diagnosis") ?
-	                      TSS463AA_DIAGNOSTIC_CONTROL_ESDC : 0) |
-	                     (of_property_read_bool(dt_node, "tss463aa,enable-transmission-diagnosis") ?
-	                      TSS463AA_DIAGNOSTIC_CONTROL_ETIP : 0) |
+	                     (of_property_read_bool(dt_node, "tss463aa,disable-system-diagnosis") ?
+	                      0 : TSS463AA_DIAGNOSTIC_CONTROL_ESDC) |
+	                     (of_property_read_bool(dt_node, "tss463aa,disable-transmission-diagnosis") ?
+	                      0 : TSS463AA_DIAGNOSTIC_CONTROL_ETIP) |
 	                     (M << TSS463AA_DIAGNOSTIC_CONTROL_M_SHIFT) |
 	                     (SDC << TSS463AA_DIAGNOSTIC_CONTROL_SDC_SHIFT));
 	if (ret)
