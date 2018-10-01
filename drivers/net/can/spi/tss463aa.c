@@ -451,17 +451,14 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 	u8 channel_offset;
 	u8 ret;
 	bool ext = true;
-	bool rtr;
-	bool rnw;
-	bool rak;
+	bool rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
+	bool rnw = (frame->flags & CANFD_RNW) != 0;
+	bool rak = (frame->flags & CANFD_DRAK) == 0;
 	u8 len1 = frame->len + 1; /* includes the status dummy */
 	if ((frame->can_id & CAN_EFF_FLAG) != 0)
 		idt = frame->can_id & CAN_EFF_MASK;
 	else
 		idt = frame->can_id & CAN_SFF_MASK;
-	rnw = (frame->flags & CANFD_RNW) != 0;
-	rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
-	rak = (frame->flags & CANFD_DRAK) == 0;
 
 	channel_offset = tss463aa_hw_find_transmission_channel(spi, ext, rnw, rtr);
 	if (!channel_offset) {
