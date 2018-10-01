@@ -563,7 +563,7 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
 		frame->can_id |= CAN_RTR_FLAG;
 	if (buf[0] & 0x40)
 		frame->flags |= CANFD_RNW;
-	if ((buf[0] & 0x80) == 0)
+	if ((buf[0] & 0x80) != 0)
 		frame->flags |= CANFD_ACK;
 	/* Note: A combination RNW = 0 (write) && RTR = 1 will never happen (VAN standard). */
 
