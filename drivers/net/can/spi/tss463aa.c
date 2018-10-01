@@ -709,6 +709,12 @@ static int tss463aa_set_mode(struct net_device *net, enum can_mode mode)
 #define TSS463AA_LINE_STATUS_TXG BIT(1) /* transmitting */
 #define TSS463AA_LINE_STATUS_SBA_SHIFT 2
 #define TSS463AA_LINE_STATUS_SBA_MASK 12
+
+#define TSS463AA_LINE_STATUS_SBA_RXD0 0 /* Differential communication */
+#define TSS463AA_LINE_STATUS_SBA_RXD2 1 /* Fault on DATA (RXD1) */
+#define TSS463AA_LINE_STATUS_SBA_RXD1 2 /* Fault on inv DATA (RXD2) */
+#define TSS463AA_LINE_STATUS_SBA_MAJOR_ERROR 3 /* Major error */
+
 #define TSS463AA_LINE_STATUS_SC BIT(4) /* error anywhen mark */
 #define TSS463AA_LINE_STATUS_IDG BIT(5) /* idling */
 #define TSS463AA_LINE_STATUS_SPG BIT(6) /* sleeping */
@@ -1229,12 +1235,20 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 		line_status = tss463aa_hw_read(spi, TSS463AA_LINE_STATUS);
 
 		/* Update CAN state */
-		if ((line_status & TSS463AA_LINE_STATUS_SBA_MASK) == TSS463AA_LINE_STATUS_SBA_MASK) /* Major error */
-			new_state = CAN_STATE_BUS_OFF;
-		else
+		switch ((line_status & TSS463AA_LINE_STATUS_SBA_MASK) >> TSS463AA_LINE_STATUS_SBA_SHIFT) {
+		case TSS463AA_LINE_STATUS_SBA_RXD0:
 			new_state = CAN_STATE_ERROR_ACTIVE;
-		//	new_state = CAN_STATE_ERROR_PASSIVE;
-		//	new_state = CAN_STATE_ERROR_WARNING;
+			break;
+		case TSS463AA_LINE_STATUS_SBA_RXD1:
+			new_state = CAN_STATE_ERROR_WARNING;
+			break;
+		case TSS463AA_LINE_STATUS_SBA_RXD2:
+			new_state = CAN_STATE_ERROR_WARNING;
+			break;
+		case TSS463AA_LINE_STATUS_SBA_MAJOR_ERROR:
+			new_state = CAN_STATE_ERROR_PASSIVE;
+			break;
+		}
 
 		if ((intf & TSS463AA_INTERRUPT_STATUS_RST) != 0) {
 			dev_dbg(&spi->dev, "chip reset happened.  Glitch?\n");
