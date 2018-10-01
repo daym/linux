@@ -944,7 +944,9 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 
 	/* Set up Diagnostic Control settings */
 
-	/* TODO: Maybe allow SDC to be set?  Probably very opaque to the user. */
+	/* SDC period should be longer than the max frame length on the bus.
+	Let's take 512 bits to be sure. */
+	u8 SDC = 3;
 
 	if (of_property_read_u32(dt_node, "tss463aa,diagnostic-mode", &M))
 		M = 3; /* automatic selection */
@@ -959,12 +961,14 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 	                     (tss463aa_hw_read(spi, TSS463AA_DIAGNOSTIC_CONTROL) &~
 	                      (TSS463AA_DIAGNOSTIC_CONTROL_ESDC |
 	                       TSS463AA_DIAGNOSTIC_CONTROL_ETIP |
-	                       TSS463AA_DIAGNOSTIC_CONTROL_M_MASK)) |
+	                       TSS463AA_DIAGNOSTIC_CONTROL_M_MASK |
+	                       TSS463AA_DIAGNOSTIC_CONTROL_SDC_MASK)) |
 	                     (of_property_read_bool(dt_node, "tss463aa,enable-system-diagnosis") ?
 	                      TSS463AA_DIAGNOSTIC_CONTROL_ESDC : 0) |
 	                     (of_property_read_bool(dt_node, "tss463aa,enable-transmission-diagnosis") ?
 	                      TSS463AA_DIAGNOSTIC_CONTROL_ETIP : 0) |
-	                     (M << TSS463AA_DIAGNOSTIC_CONTROL_M_SHIFT));
+	                     (M << TSS463AA_DIAGNOSTIC_CONTROL_M_SHIFT) |
+	                     (SDC << TSS463AA_DIAGNOSTIC_CONTROL_SDC_SHIFT));
 	if (ret)
 		return ret;
 
