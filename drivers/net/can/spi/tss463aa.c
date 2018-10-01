@@ -142,20 +142,6 @@ struct tss463aa_priv {
 	bool aa55_sync;
 };
 
-static void tss463aa_clean(struct net_device *net)
-{
-	struct tss463aa_priv *priv = netdev_priv(net);
-
-	if (priv->tx_skb || priv->tx_len)
-		net->stats.tx_errors++;
-	if (priv->tx_skb)
-		dev_kfree_skb(priv->tx_skb);
-	if (priv->tx_len)
-		can_free_echo_skb(priv->net, 0);
-	priv->tx_skb = NULL;
-	priv->tx_len = 0;
-}
-
 /* Note: assert XTAL < (MAX_UDELAY_MS 1000 us = 5000 us) for udelay to work. */
 #define XTAL_us(cycles) DIV_ROUND_UP(((cycles)*1000000), priv->xtal_clock_frequency)
 
@@ -673,6 +659,20 @@ static netdev_tx_t tss463aa_hard_start_xmit(struct sk_buff *skb, struct net_devi
 	queue_work(priv->wq, &priv->tx_work);
 
 	return NETDEV_TX_OK;
+}
+
+static void tss463aa_clean(struct net_device *net)
+{
+	struct tss463aa_priv *priv = netdev_priv(net);
+
+	if (priv->tx_skb || priv->tx_len)
+		net->stats.tx_errors++;
+	if (priv->tx_skb)
+		dev_kfree_skb(priv->tx_skb);
+	if (priv->tx_len)
+		can_free_echo_skb(priv->net, 0);
+	priv->tx_skb = NULL;
+	priv->tx_len = 0;
 }
 
 __attribute__((warn_unused_result))
