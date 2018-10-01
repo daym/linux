@@ -1322,7 +1322,11 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 						continue;
 					}
 
-					tss463aa_hw_rx(spi, channel_offset, id);
+					ret = tss463aa_hw_rx(spi, channel_offset, id);
+					if (ret) {
+						dev_err(&spi->dev, "could not read message.\n");
+						continue;
+					}
 					if ((setup & TSS463AA_CHANNELFIELD1_RNW) != 0) {
 						/* "Reply" requests don't receive automatically. */
 						if ((setup & (TSS463AA_CHANNELFIELD1_RNW | TSS463AA_CHANNELFIELD1_RTR)) == (TSS463AA_CHANNELFIELD1_RNW | TSS463AA_CHANNELFIELD1_RTR)) { /* RNW, RTR. So a Reply request. */
