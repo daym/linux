@@ -56,7 +56,7 @@
 /* TODO: Support EXT some more. */
 /* TODO: Support rearbitration. */
 /* TODO: Support aborting. */
-/* TODO: Handle disabled channels better. */
+/* TODO: Handle disabled channels better (When CHRx stays 1, that would be misjudged as always-something-there-to-receive). */
 /* TODO: Support ndo_tx_timeout (and abort there?). */
 /* Notes on "Reply" requests:
 
