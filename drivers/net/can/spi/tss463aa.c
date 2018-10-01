@@ -422,16 +422,18 @@ static int tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_offset, u8 *b
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
-	u8 msgpointer = tss463aa_hw_read(priv->spi, channel_offset + 2) & 0x7F;
-	u8 msglen = tss463aa_hw_read(priv->spi, channel_offset + 3) >> 3;
+	u8 msgpointer = (tss463aa_hw_read(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT;
+	u8 msglen = (tss463aa_hw_read(priv->spi, channel_offset + 3) & TSS463AA_CHANNELFIELD3_MSGLEN_MASK) >> TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT;
 
 	priv->spi_tx_buf[0] = msgpointer;
 	priv->spi_tx_buf[1] = TSS463AA_REGISTER_WRITE;
 	priv->spi_tx_buf[2] = 0; /* dummy */
 	if (len > TSS463AA_TX_BUF_LEN - 3)
 		len = TSS463AA_TX_BUF_LEN - 3;
-	if (len > msglen - 1) /* 1: The dummy above */
+	if (len > msglen - 1) /* 1: The dummy above */ {
 		len = msglen - 1;
+		dev_err(&spi->dev, "truncated a message since it was too long.\n");
+	}
 	memcpy(priv->spi_tx_buf + 3, buf, len);
 	return tss463aa_hw_spi_trans(spi, len + 3);
 }
