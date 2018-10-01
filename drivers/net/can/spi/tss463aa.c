@@ -716,6 +716,7 @@ static int tss463aa_set_mode(struct net_device *net, enum can_mode mode)
 #define TSS463AA_INTE_RXERR BIT(2)
 #define TSS463AA_INTE_RXOK BIT(1)
 #define TSS463AA_INTE_RXNOK BIT(0) /* with no RAK */
+#define TSS463AA_INTE_MASK 31
 
 #define TSS463AA_LINE_STATUS 4
 #define TSS463AA_LINE_STATUS_RXG BIT(0) /* receiving */
@@ -750,7 +751,7 @@ static int tss463aa_activate(struct spi_device *spi)
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	int ret;
 
-	ret = tss463aa_hw_write(spi, TSS463AA_INTE, TSS463AA_INTE_TXERR |
+	ret = tss463aa_hw_write(spi, TSS463AA_INTE, 0x80 |
 	                             TSS463AA_INTE_TXERR | TSS463AA_INTE_TXOK |
 	                             TSS463AA_INTE_RXERR | TSS463AA_INTE_RXOK |
 	                             TSS463AA_INTE_RXNOK);
