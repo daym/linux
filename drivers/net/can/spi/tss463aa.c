@@ -233,7 +233,7 @@ static int __must_check tss463aa_hw_probe(struct spi_device *spi)
 #define TSS463AA_REGISTER_READ 0x60
 #define TSS463AA_REGISTER_WRITE 0xE0
 
-static u8 __must_check tss463aa_hw_read(struct spi_device *spi, u8 reg)
+static u8 __must_check tss463aa_hw_read_u8(struct spi_device *spi, u8 reg)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	u8 val = 0;
@@ -245,14 +245,14 @@ static u8 __must_check tss463aa_hw_read(struct spi_device *spi, u8 reg)
 	ret = tss463aa_hw_spi_trans(spi, 3);
 	if (ret) {
 		dev_err(&spi->dev, "hw_read failed.\n");
-		/* FIXME: Fail somehow? */
+		/* FIXME: Handle error. */
 		return 0;
 	}
 	val = priv->spi_rx_buf[2];
 	return val;
 }
 
-static int __must_check tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
+static int __must_check tss463aa_hw_write_u8(struct spi_device *spi, u8 reg, u8 val)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	int ret;
@@ -267,6 +267,26 @@ static int __must_check tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val
 	}
 	/* Note: priv->spi_rx_buf[2] == 0xFF */
 	return 0;
+}
+
+/** Reads register REG, masks it with KEEP, enables the bits in bitmask ENABLE and writes the result back. */
+static int __must_check tss463aa_hw_fiddle_u8(struct spi_device *spi, u8 reg, unsigned keep, u8 enable) {
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	u8 val = 0;
+	int ret;
+
+	priv->spi_tx_buf[0] = reg;
+	priv->spi_tx_buf[1] = TSS463AA_REGISTER_READ;
+	priv->spi_tx_buf[2] = 0xFF; /* dummy value */
+	ret = tss463aa_hw_spi_trans(spi, 3);
+	if (ret) {
+		dev_err(&spi->dev, "hw_read failed.\n");
+		return ret;
+	}
+	val = priv->spi_rx_buf[2];
+	val &= keep;
+	val |= enable;
+	return tss463aa_hw_write_u8(spi, reg, val);
 }
 
 #define TSS463AA_CHANNELFIELD1_RTR BIT(0)
@@ -354,7 +374,7 @@ static int __must_check tss463aa_hw_set_channel_up(struct spi_device *spi, u8 of
 /* Note: To wake up, call tss463aa_reset. */
 static int __must_check tss463aa_hw_sleep(struct spi_device *spi)
 {
-	int ret = tss463aa_hw_write(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_SLEEP);
+	int ret = tss463aa_hw_write_u8(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_SLEEP);
 	/* TODO: Poll line status to see whether it was done already? */
 	if (ret)
 		dev_warn(&spi->dev, "could not send chip to sleep.\n");
@@ -384,10 +404,10 @@ static u8 __must_check tss463aa_hw_find_transmission_channel(struct spi_device *
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET, channel = 0;
 	     channel < TSS463AA_CHANNEL_COUNT;
 	     channel_offset += TSS463AA_CHANNEL_SIZE, ++channel) {
-		u8 idthcmd = tss463aa_hw_read(spi, channel_offset + 1);
+		u8 idthcmd = tss463aa_hw_read_u8(spi, channel_offset + 1);
 		bool channel_ext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
 		bool channel_rnw = (idthcmd & TSS463AA_CHANNELFIELD1_RNW) != 0;
-		u8 status = tss463aa_hw_read(spi, channel_offset + 3);
+		u8 status = tss463aa_hw_read_u8(spi, channel_offset + 3);
 		bool need_receiver_free = priv->listeningchannels[channel] && rnw;
 		if (channel_ext != ext || channel_rnw != rnw) /* Note: NOT RTR */
 			continue;
@@ -406,8 +426,8 @@ static int __must_check tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
-	u8 msgpointer = (tss463aa_hw_read(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT;
-	u8 msglen = (tss463aa_hw_read(priv->spi, channel_offset + 3) & TSS463AA_CHANNELFIELD3_MSGLEN_MASK) >> TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT;
+	u8 msgpointer = (tss463aa_hw_read_u8(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT;
+	u8 msglen = (tss463aa_hw_read_u8(priv->spi, channel_offset + 3) & TSS463AA_CHANNELFIELD3_MSGLEN_MASK) >> TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT;
 	if (msglen == 0) {
 		dev_err(&spi->dev, "cannot transmit message via this channel - no buffer space is available.\n");
 		return -EIO;
@@ -453,7 +473,7 @@ static int __must_check tss463aa_hw_tx(struct spi_device *spi, struct canfd_fram
 		return -EBUSY;
 	}
 
-	ret = tss463aa_hw_write(spi, channel_offset, idt >> 4);
+	ret = tss463aa_hw_write_u8(spi, channel_offset, idt >> 4);
 	if (ret)
 		return ret;
 
@@ -461,21 +481,19 @@ static int __must_check tss463aa_hw_tx(struct spi_device *spi, struct canfd_fram
 	if (ret)
 		return ret;
 
-	ret = tss463aa_hw_write(spi, channel_offset + 1,
-	                        (idt << TSS463AA_CHANNELFIELD1_IDTL_SHIFT) |
-	                        (ext ? TSS463AA_CHANNELFIELD1_EXT : 0) |
-	                        (rtr ? TSS463AA_CHANNELFIELD1_RTR : 0) |
-	                        (rnw ? TSS463AA_CHANNELFIELD1_RNW : 0) |
-	                        (rak ? TSS463AA_CHANNELFIELD1_RAK : 0));
+	ret = tss463aa_hw_write_u8(spi, channel_offset + 1,
+	                           (idt << TSS463AA_CHANNELFIELD1_IDTL_SHIFT) |
+	                           (ext ? TSS463AA_CHANNELFIELD1_EXT : 0) |
+	                           (rtr ? TSS463AA_CHANNELFIELD1_RTR : 0) |
+	                           (rnw ? TSS463AA_CHANNELFIELD1_RNW : 0) |
+	                           (rak ? TSS463AA_CHANNELFIELD1_RAK : 0));
 	if (ret)
 		return ret;
 
 	/* Transmit */
 	if (rnw) /* "Reply" request (either sent or received): Allow receiving, once. */
 		keep &= ~TSS463AA_CHANNELFIELD3_CHRX;
-	ret = tss463aa_hw_write(spi, channel_offset + 3,
-	                        (tss463aa_hw_read(spi, channel_offset + 3) & keep) |
-	                        (len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT));
+	ret = tss463aa_hw_fiddle_u8(spi, channel_offset + 3, keep, len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT);
 	return ret;
 }
 
@@ -485,8 +503,8 @@ static int __must_check tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_
 	int ret;
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
-	u8 msgpointer = (tss463aa_hw_read(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT;
-	u8 msglen = (tss463aa_hw_read(priv->spi, channel_offset + 3) & TSS463AA_CHANNELFIELD3_MSGLEN_MASK) >> TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT;
+	u8 msgpointer = (tss463aa_hw_read_u8(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT;
+	u8 msglen = (tss463aa_hw_read_u8(priv->spi, channel_offset + 3) & TSS463AA_CHANNELFIELD3_MSGLEN_MASK) >> TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT;
 	u8 len = TSS463AA_RX_BUF_LEN - 2;
 	if (msglen <= len)
 		len = msglen;
@@ -613,10 +631,7 @@ static int __must_check tss463aa_set_bittiming(struct net_device *dev)
 	if (CD >= 8 || (1 << CD) != timing->brp)
 		return -EINVAL;
 
-	return tss463aa_hw_write(spi, TSS463AA_LINE_CONTROL,
-	                         (tss463aa_hw_read(spi, TSS463AA_LINE_CONTROL) &~
-	                          TSS463AA_LINE_CONTROL_CD_MASK) |
-	                         (CD << TSS463AA_LINE_CONTROL_CD_SHIFT));
+	return tss463aa_hw_fiddle_u8(spi, TSS463AA_LINE_CONTROL, ~TSS463AA_LINE_CONTROL_CD_MASK, CD << TSS463AA_LINE_CONTROL_CD_SHIFT);
 }
 
 #define TSS463AA_TRANSMISSION_CONTROL 1
@@ -731,15 +746,15 @@ static int __must_check tss463aa_activate(struct spi_device *spi)
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	int ret;
 
-	ret = tss463aa_hw_write(spi, TSS463AA_INTE, TSS463AA_INTE_RST |
-	                             TSS463AA_INTE_TXERR | TSS463AA_INTE_TXOK |
-	                             TSS463AA_INTE_RXERR | TSS463AA_INTE_RXOK |
-	                             TSS463AA_INTE_RXNOK);
+	ret = tss463aa_hw_write_u8(spi, TSS463AA_INTE, TSS463AA_INTE_RST |
+	                                TSS463AA_INTE_TXERR | TSS463AA_INTE_TXOK |
+	                                TSS463AA_INTE_RXERR | TSS463AA_INTE_RXOK |
+	                                TSS463AA_INTE_RXNOK);
 	if (ret)
 		return ret;
 
 	/* Start transmitting/receiving on the VAN bus */
-	ret = tss463aa_hw_write(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_ACTIVATE);
+	ret = tss463aa_hw_write_u8(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_ACTIVATE);
 	if (ret)
 		return ret;
 
@@ -892,17 +907,16 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 
 	/* Set up Line Control settings */
 
-	ret = tss463aa_hw_write(spi, TSS463AA_LINE_CONTROL,
-	                     (tss463aa_hw_read(spi, TSS463AA_LINE_CONTROL) &~
-	                      (TSS463AA_LINE_CONTROL_IVRX |
-	                       TSS463AA_LINE_CONTROL_IVTX |
-	                       TSS463AA_LINE_CONTROL_PC)) |
-	                     (of_property_read_bool(dt_node, "tss463aa,inverted-rx") ?
-	                      TSS463AA_LINE_CONTROL_IVRX : 0) |
-	                     (of_property_read_bool(dt_node, "tss463aa,invert-tx") ?
-	                      TSS463AA_LINE_CONTROL_IVTX : 0) |
-	                     (of_property_read_bool(dt_node, "tss463aa,pulse-coded-modulation") ?
-	                      TSS463AA_LINE_CONTROL_PC : 0));
+	ret = tss463aa_hw_fiddle_u8(spi, TSS463AA_LINE_CONTROL,
+	                            ~(TSS463AA_LINE_CONTROL_IVRX |
+	                              TSS463AA_LINE_CONTROL_IVTX |
+	                              TSS463AA_LINE_CONTROL_PC),
+	                            (of_property_read_bool(dt_node, "tss463aa,inverted-rx") ?
+	                             TSS463AA_LINE_CONTROL_IVRX : 0) |
+	                            (of_property_read_bool(dt_node, "tss463aa,invert-tx") ?
+	                             TSS463AA_LINE_CONTROL_IVTX : 0) |
+	                            (of_property_read_bool(dt_node, "tss463aa,pulse-coded-modulation") ?
+	                             TSS463AA_LINE_CONTROL_PC : 0));
 	if (ret)
 		return ret;
 
@@ -915,13 +929,12 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 		dev_warn(&spi->dev, "Value for 'transmission retry count' is invalid. Clamping.\n");
 		transmission_retry_count = TSS463AA_TRANSMISSION_CONTROL_MR_MASK >> TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT;
 	}
-	ret = tss463aa_hw_write(spi, TSS463AA_TRANSMISSION_CONTROL,
-	                     (tss463aa_hw_read(spi, TSS463AA_TRANSMISSION_CONTROL) &~
-	                      (TSS463AA_TRANSMISSION_CONTROL_MT |
-	                       TSS463AA_TRANSMISSION_CONTROL_MR_MASK)) |
-	                     (of_property_read_bool(dt_node, "tss463aa,autonomous") ?
-	                      TSS463AA_TRANSMISSION_CONTROL_MT : 0) |
-	                     (transmission_retry_count << TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT));
+	ret = tss463aa_hw_fiddle_u8(spi, TSS463AA_TRANSMISSION_CONTROL,
+	                            ~(TSS463AA_TRANSMISSION_CONTROL_MT |
+	                              TSS463AA_TRANSMISSION_CONTROL_MR_MASK),
+	                            (of_property_read_bool(dt_node, "tss463aa,autonomous") ?
+	                             TSS463AA_TRANSMISSION_CONTROL_MT : 0) |
+	                            (transmission_retry_count << TSS463AA_TRANSMISSION_CONTROL_MR_SHIFT));
 	if (ret)
 		return ret;
 
@@ -936,18 +949,17 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 
 	priv->aa55_sync = !of_property_read_bool(dt_node, "tss463aa,crystal-clock");
 
-	ret = tss463aa_hw_write(spi, TSS463AA_DIAGNOSTIC_CONTROL,
-	                     (tss463aa_hw_read(spi, TSS463AA_DIAGNOSTIC_CONTROL) &~
-	                      (TSS463AA_DIAGNOSTIC_CONTROL_ESDC |
-	                       TSS463AA_DIAGNOSTIC_CONTROL_ETIP |
-	                       TSS463AA_DIAGNOSTIC_CONTROL_M_MASK |
-	                       TSS463AA_DIAGNOSTIC_CONTROL_SDC_MASK)) |
-	                     (of_property_read_bool(dt_node, "tss463aa,disable-system-diagnosis") ?
-	                      0 : TSS463AA_DIAGNOSTIC_CONTROL_ESDC) |
-	                     (of_property_read_bool(dt_node, "tss463aa,disable-transmission-diagnosis") ?
-	                      0 : TSS463AA_DIAGNOSTIC_CONTROL_ETIP) |
-	                     (M << TSS463AA_DIAGNOSTIC_CONTROL_M_SHIFT) |
-	                     (SDC << TSS463AA_DIAGNOSTIC_CONTROL_SDC_SHIFT));
+	ret = tss463aa_hw_fiddle_u8(spi, TSS463AA_DIAGNOSTIC_CONTROL,
+	                            ~(TSS463AA_DIAGNOSTIC_CONTROL_ESDC |
+	                              TSS463AA_DIAGNOSTIC_CONTROL_ETIP |
+	                              TSS463AA_DIAGNOSTIC_CONTROL_M_MASK |
+	                              TSS463AA_DIAGNOSTIC_CONTROL_SDC_MASK),
+	                            (of_property_read_bool(dt_node, "tss463aa,disable-system-diagnosis") ?
+	                             0 : TSS463AA_DIAGNOSTIC_CONTROL_ESDC) |
+	                            (of_property_read_bool(dt_node, "tss463aa,disable-transmission-diagnosis") ?
+	                             0 : TSS463AA_DIAGNOSTIC_CONTROL_ETIP) |
+	                            (M << TSS463AA_DIAGNOSTIC_CONTROL_M_SHIFT) |
+	                            (SDC << TSS463AA_DIAGNOSTIC_CONTROL_SDC_SHIFT));
 	if (ret)
 		return ret;
 
@@ -1014,10 +1026,10 @@ static int __must_check tss463aa_stop(struct net_device *net)
 	ret = tss463aa_clear_channels(spi);
 	if (ret)
 		netdev_err(net, "could not clear channels.\n");
-	ret = tss463aa_hw_write(spi, TSS463AA_INTE, 0x0);
+	ret = tss463aa_hw_write_u8(spi, TSS463AA_INTE, 0x0);
 	if (ret)
 		netdev_err(net, "could not stop.\n");
-	ret = tss463aa_hw_write(spi, TSS463AA_INTERRUPT_RESET, TSS463AA_INTERRUPT_RESET_MASK);
+	ret = tss463aa_hw_write_u8(spi, TSS463AA_INTERRUPT_RESET, TSS463AA_INTERRUPT_RESET_MASK);
 	if (ret)
 		netdev_err(net, "could not stop.\n");
 
@@ -1120,7 +1132,7 @@ static void tss463aa_restart_work_handler(struct work_struct *ws)
 static void tss463aa_update_can_error(struct tss463aa_priv *priv, struct can_frame *cf, int transmission)
 {
 	struct spi_device *spi = priv->spi;
-	u8 last_error = tss463aa_hw_read(spi, TSS463AA_LAST_ERROR);
+	u8 last_error = tss463aa_hw_read_u8(spi, TSS463AA_LAST_ERROR);
 	if (last_error & TSS463AA_LAST_ERROR_BOV) {
 		cf->can_id |= CAN_ERR_CRTL;
 		cf->data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
@@ -1145,7 +1157,7 @@ static void tss463aa_update_can_error(struct tss463aa_priv *priv, struct can_fra
 	}
 
 	if (transmission) {
-		u8 transmission_status = tss463aa_hw_read(spi, TSS463AA_TRANSMISSION_STATUS);
+		u8 transmission_status = tss463aa_hw_read_u8(spi, TSS463AA_TRANSMISSION_STATUS);
 		u8 idt = ((transmission_status & TSS463AA_TRANSMISSION_STATUS_IDT_MASK) >> TSS463AA_TRANSMISSION_STATUS_IDT_SHIFT);
 		u8 nrt = ((transmission_status & TSS463AA_TRANSMISSION_STATUS_NRT_MASK) >> TSS463AA_TRANSMISSION_STATUS_NRT_SHIFT);
 		/* FIXME: Check whether this still works when TE is asserted! */
@@ -1222,22 +1234,22 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 
 	mutex_lock(&priv->tss463aa_lock);
 
-	intf = tss463aa_hw_read(spi, TSS463AA_INTERRUPT_STATUS) & TSS463AA_INTERRUPT_STATUS_MASK;
+	intf = tss463aa_hw_read_u8(spi, TSS463AA_INTERRUPT_STATUS) & TSS463AA_INTERRUPT_STATUS_MASK;
 	if (!intf)
 		return IRQ_NONE;
 
 	while (!priv->force_quit) {
 		enum can_state new_state;
 
-		intf = tss463aa_hw_read(spi, TSS463AA_INTERRUPT_STATUS) & TSS463AA_INTERRUPT_STATUS_MASK;
+		intf = tss463aa_hw_read_u8(spi, TSS463AA_INTERRUPT_STATUS) & TSS463AA_INTERRUPT_STATUS_MASK;
 		if (intf == 0)
 			break;
 
-		tss463aa_hw_write(spi, TSS463AA_INTERRUPT_RESET, TSS463AA_INTERRUPT_RESET_MASK); /* clear pending interrupt */
+		tss463aa_hw_write_u8(spi, TSS463AA_INTERRUPT_RESET, TSS463AA_INTERRUPT_RESET_MASK); /* clear pending interrupt */
 
 		/* There's no interrupt for line_status, so take what we can get. */
 
-		line_status = tss463aa_hw_read(spi, TSS463AA_LINE_STATUS);
+		line_status = tss463aa_hw_read_u8(spi, TSS463AA_LINE_STATUS);
 
 		/* Update CAN state */
 		switch ((line_status & TSS463AA_LINE_STATUS_SBA_MASK) >> TSS463AA_LINE_STATUS_SBA_SHIFT) {
@@ -1275,13 +1287,13 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 
 		if (intf & (TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK | TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE | TSS463AA_INTERRUPT_STATUS_RE))
 			for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
-				u8 channel_status = tss463aa_hw_read(spi, channel_offset + 3);
+				u8 channel_status = tss463aa_hw_read_u8(spi, channel_offset + 3);
 				if ((channel_status & TSS463AA_CHANNELFIELD3_CHER) != 0) {
 					int ret;
 					/* TODO: Get error (if possible) */
 					dev_warn(&spi->dev, "channel with offset %u logged an error. Clearing it.\n", channel_offset);
 					channel_status &= ~TSS463AA_CHANNELFIELD3_CHER;
-					ret = tss463aa_hw_write(spi, channel_offset + 3, channel_status);
+					ret = tss463aa_hw_write_u8(spi, channel_offset + 3, channel_status);
 					if (ret)
 						dev_err(&spi->dev, "could not clear error.\n");
 				}
@@ -1313,15 +1325,15 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							   Restore it here and lose the TX message.
 							   FIXME: Remove if possible. */
 							channel_status |= TSS463AA_CHANNELFIELD3_CHTX;
-							tss463aa_hw_write(spi, channel_offset + 3, channel_status);
+							tss463aa_hw_write_u8(spi, channel_offset + 3, channel_status);
 						}
 					} else if (priv->listeningchannels[channel_offset / TSS463AA_CHANNEL_SIZE]) {
 						if (priv->immediate_reply_channels[channel_offset / TSS463AA_CHANNEL_SIZE]) {
 							/* Load the immediate reply again */
-							tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ (TSS463AA_CHANNELFIELD3_CHRX | TSS463AA_CHANNELFIELD3_CHTX));
+							tss463aa_hw_write_u8(spi, channel_offset + 3, channel_status &~ (TSS463AA_CHANNELFIELD3_CHRX | TSS463AA_CHANNELFIELD3_CHTX));
 						} else {
 							/* Allow receiving another message. */
-							tss463aa_hw_write(spi, channel_offset + 3, channel_status &~ TSS463AA_CHANNELFIELD3_CHRX);
+							tss463aa_hw_write_u8(spi, channel_offset + 3, channel_status &~ TSS463AA_CHANNELFIELD3_CHRX);
 						}
 					}
 				} else if ((channel_status & TSS463AA_CHANNELFIELD3_CHTX) != 0) {
