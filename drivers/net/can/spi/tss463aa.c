@@ -1004,11 +1004,9 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 	return tss463aa_set_channels_up_from_dt(spi, dt_node);
 }
 
-static int __must_check tss463aa_hw_clear_channels(struct spi_device *spi)
+static int __must_check tss463aa_hw_clear_channels(struct spi_device *spi, bool drak)
 {
 	u8 channel_offset;
-	struct tss463aa_priv *priv = spi_get_drvdata(spi);
-	bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
 	for (channel_offset = TSS463AA_CHANNEL0_OFFSET;
 	     channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE;
 	     channel_offset += TSS463AA_CHANNEL_SIZE) {
@@ -1019,9 +1017,23 @@ static int __must_check tss463aa_hw_clear_channels(struct spi_device *spi)
 	return 0;
 }
 
+static int __must_check tss463aa_clear_channels(struct spi_device *spi)
+{
+	u8 channel;
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
+	int ret = tss463aa_hw_clear_channels(spi, drak);
+	for (channel = 0; channel < TSS463AA_CHANNEL_COUNT; ++channel) {
+		priv->our_CHRxs[channel] = true;
+		priv->listeningchannels[channel] = false;
+		priv->immediate_reply_channels[channel] = false;
+	}
+	return ret;
+}
+
 static int __must_check tss463aa_setup(struct spi_device *spi)
 {
-	int ret = tss463aa_hw_clear_channels(spi);
+	int ret = tss463aa_clear_channels(spi);
 	if (ret)
 		return ret;
 	return tss463aa_set_up_from_dt(spi, spi->dev.of_node);
@@ -1063,7 +1075,7 @@ static int __must_check tss463aa_stop(struct net_device *net)
 	mutex_lock(&priv->tss463aa_lock);
 
 	/* Disable transmission&reception, disable interrupts and clear flags. */
-	ret = tss463aa_hw_clear_channels(spi);
+	ret = tss463aa_clear_channels(spi);
 	if (ret)
 		netdev_err(net, "could not clear channels.\n");
 	ret = tss463aa_hw_write_u8(spi, TSS463AA_INTE, 0x0);
