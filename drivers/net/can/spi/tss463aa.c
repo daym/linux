@@ -48,7 +48,7 @@
 #define CANFD_DRAK 0x80
 
 /* If an ACK was requested by the sender (FYI only). */
-#define CANFD_ACK 0x20
+#define CANFD_RAK 0x20
 
 /* "Reply" request, f.e. read-register. */
 #define CANFD_RNW 0x40
@@ -564,7 +564,7 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
 	if (buf[0] & 0x40)
 		frame->flags |= CANFD_RNW;
 	if ((buf[0] & 0x80) != 0)
-		frame->flags |= CANFD_ACK;
+		frame->flags |= CANFD_RAK;
 	/* Note: A combination RNW = 0 (write) && RTR = 1 will never happen (VAN standard). */
 
 	frame->can_id = id | CAN_EFF_FLAG; /* Note: CAN IDs have 29 bits. */
