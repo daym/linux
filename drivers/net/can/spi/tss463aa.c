@@ -451,7 +451,7 @@ static int __must_check tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
-	u8 msgpointer = (tss463aa_hw_read_u8(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT;
+	u8 msgpointer = 0x80 | ((tss463aa_hw_read_u8(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT);
 	u8 msglen = (tss463aa_hw_read_u8(priv->spi, channel_offset + 3) & TSS463AA_CHANNELFIELD3_MSGLEN_MASK) >> TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT;
 	if (msglen == 0) {
 		dev_err(&spi->dev, "cannot transmit message via this channel - no buffer space is available.\n");
@@ -533,7 +533,7 @@ static int __must_check tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_
 	int ret;
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
-	u8 msgpointer = (tss463aa_hw_read_u8(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT;
+	u8 msgpointer = 0x80 | ((tss463aa_hw_read_u8(priv->spi, channel_offset + 2) & TSS463AA_CHANNELFIELD2_MSGPOINTER_MASK) >> TSS463AA_CHANNELFIELD2_MSGPOINTER_SHIFT);
 	u8 msglen = (tss463aa_hw_read_u8(priv->spi, channel_offset + 3) & TSS463AA_CHANNELFIELD3_MSGLEN_MASK) >> TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT;
 	u8 len = TSS463AA_RX_BUF_LEN - 2;
 	if (msglen <= len)
