@@ -389,11 +389,11 @@ static u8 __must_check tss463aa_hw_find_transmission_channel(struct spi_device *
 		bool channel_ext = (idthcmd & TSS463AA_CHANNELFIELD1_EXT) != 0;
 		bool channel_rnw = (idthcmd & TSS463AA_CHANNELFIELD1_RNW) != 0;
 		u8 status = tss463aa_hw_read(spi, channel_offset + 3);
+		bool need_receiver_free = priv->listeningchannels[channel] && rnw;
 		if (channel_ext != ext || channel_rnw != rnw) /* Note: NOT RTR */
 			continue;
 		if ((status & TSS463AA_CHANNELFIELD3_CHTX) == 0) /* busy */
 			continue;
-		bool need_receiver_free = priv->listeningchannels[channel] && rnw;
 
 		/* This is racy - but a sanity check only. */
 		BUG_ON(need_receiver_free && (status & TSS463AA_CHANNELFIELD3_CHRX) == 0);
@@ -435,6 +435,8 @@ static int __must_check tss463aa_hw_tx(struct spi_device *spi, struct canfd_fram
 	u16 idt;
 	u8 channel_offset;
 	u8 ret;
+	u8 keep = TSS463AA_CHANNELFIELD3_CHRX |
+	          TSS463AA_CHANNELFIELD3_CHER;
 	bool ext = true;
 	bool rtr = (frame->can_id & CAN_RTR_FLAG) != 0;
 	bool rnw = (frame->flags & CANFD_RNW) != 0;
@@ -470,8 +472,6 @@ static int __must_check tss463aa_hw_tx(struct spi_device *spi, struct canfd_fram
 		return ret;
 
 	/* Transmit */
-	u8 keep = TSS463AA_CHANNELFIELD3_CHRX |
-	          TSS463AA_CHANNELFIELD3_CHER;
 	if (rnw) /* "Reply" request (either sent or received): Allow receiving, once. */
 		keep &= ~TSS463AA_CHANNELFIELD3_CHRX;
 	ret = tss463aa_hw_write(spi, channel_offset + 3,
@@ -887,6 +887,9 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 	__u8 transmission_retry_count = 0;
 	__u32 M;
 	int ret;
+	/* SDC period should be longer than the max frame length on the bus.
+	Let's take 512 bits to be sure. */
+	u8 SDC = 3;
 
 	/* Set up Line Control settings */
 
@@ -925,10 +928,6 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 
 	/* Set up Diagnostic Control settings */
 
-	/* SDC period should be longer than the max frame length on the bus.
-	Let's take 512 bits to be sure. */
-	u8 SDC = 3;
-
 	if (of_property_read_u32(dt_node, "tss463aa,diagnostic-mode", &M))
 		M = 3; /* automatic selection */
 	if (M > 3) {
@@ -958,7 +957,6 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 
 static int __must_check tss463aa_clear_channels(struct spi_device *spi)
 {
-	int ret;
 	u8 channel_offset;
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
