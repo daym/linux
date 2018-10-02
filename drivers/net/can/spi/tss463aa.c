@@ -395,7 +395,8 @@ static int __must_check tss463aa_hw_set_channel_up(struct spi_device *spi, u8 of
 #define TSS463AA_COMMAND_REAR BIT(3)
 #define TSS463AA_COMMAND_MSDC BIT(0)
 
-/* Note: To wake up, call tss463aa_reset. */
+/* Note: This IMMEDIATELY stops the clock.
+ * Note: To wake up, call tss463aa_reset. */
 static int __must_check tss463aa_hw_sleep(struct spi_device *spi)
 {
 	int ret = tss463aa_hw_write_u8(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_SLEEP);
@@ -1047,6 +1048,8 @@ static int __must_check tss463aa_stop(struct net_device *net)
 	struct tss463aa_priv *priv = netdev_priv(net);
 	struct spi_device *spi = priv->spi;
 	int ret;
+
+	/* FIXME: Wait until the chip has finished transfers? */
 
 	close_candev(net);
 
