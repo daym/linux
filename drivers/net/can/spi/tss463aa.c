@@ -118,6 +118,11 @@ struct tss463aa_priv {
 	dma_addr_t spi_tx_dma;
 	dma_addr_t spi_rx_dma;
 
+	struct spi_transfer t_lead;
+	struct spi_transfer t_address;
+	struct spi_transfer t_control;
+	struct spi_transfer t_body;
+
 	struct sk_buff *tx_skb;
 	int tx_len;
 
@@ -141,11 +146,9 @@ struct tss463aa_priv {
 /* Note: assert XTAL < (MAX_UDELAY_MS 1000 us = 5000 us) for udelay to work. */
 #define XTAL_us(cycles) DIV_ROUND_UP(((cycles)*1000000), priv->xtal_clock_frequency)
 
-static int __must_check tss463aa_hw_spi_trans(struct spi_device *spi, int len)
+static int __must_check tss463aa_hw_set_up_spi_trans(struct spi_device *spi)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
-	BUG_ON(len < 2);
-
 	struct spi_transfer t_lead = {
 		.tx_buf = NULL,
 		.rx_buf = NULL,
@@ -173,20 +176,32 @@ static int __must_check tss463aa_hw_spi_trans(struct spi_device *spi, int len)
 		.rx_buf = priv->spi_rx_buf ? priv->spi_rx_buf + 2 : NULL,
 		.tx_dma = tss463aa_enable_dma ? priv->spi_tx_dma + 2 : 0,
 		.rx_dma = tss463aa_enable_dma ? priv->spi_rx_dma + 2 : 0,
-		.len = len - 2,
+		.len = 0,
 		.cs_change = 0,
 		.delay_usecs = XTAL_us(12),
 	};
+	memcpy(&priv->t_lead, &t_lead, sizeof(t_lead));
+	memcpy(&priv->t_address, &t_address, sizeof(t_address));
+	memcpy(&priv->t_control, &t_control, sizeof(t_control));
+	memcpy(&priv->t_body, &t_body, sizeof(t_body));
+}
+
+static int __must_check tss463aa_hw_spi_trans(struct spi_device *spi, int len)
+{
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
+	BUG_ON(len < 2);
+
 	struct spi_message m;
 	int ret;
 
 	spi_message_init(&m);
 	if (tss463aa_enable_dma)
 		m.is_dma_mapped = 1;
-	spi_message_add_tail(&t_lead, &m);
-	spi_message_add_tail(&t_address, &m);
-	spi_message_add_tail(&t_control, &m);
-	spi_message_add_tail(&t_body, &m);
+	priv->t_body = len - 2;
+	spi_message_add_tail(&priv->t_lead, &m);
+	spi_message_add_tail(&priv->t_address, &m);
+	spi_message_add_tail(&priv->t_control, &m);
+	spi_message_add_tail(&priv->t_body, &m);
 	ret = spi_sync(spi, &m);
 	if (ret) {
 		dev_err(&spi->dev, "SPI transfer failed: ret = %d\n", ret);
@@ -1576,6 +1591,7 @@ static int tss463aa_can_probe(struct spi_device *spi)
 			goto error_probe;
 		}
 	}
+	tss463aa_hw_set_up_spi_trans(spi);
 
 	SET_NETDEV_DEV(net, &spi->dev);
 
