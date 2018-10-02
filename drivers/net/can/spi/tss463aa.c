@@ -1611,7 +1611,8 @@ static int tss463aa_can_probe(struct spi_device *spi)
 			/* Fall back to non-DMA */
 			tss463aa_enable_dma = 0;
 		}
-	} else {
+	}
+	if (!tss463aa_enable_dma) {
 		priv->spi_tx_dma = 0;
 		priv->spi_rx_dma = 0;
 		priv->spi_tx_buf = devm_kzalloc(&spi->dev, TSS463AA_TX_BUF_LEN,
