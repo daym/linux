@@ -1051,9 +1051,9 @@ static int __must_check tss463aa_stop(struct net_device *net)
 	struct spi_device *spi = priv->spi;
 	int ret;
 
-	/* FIXME: Wait until the chip has finished transfers? */
-
 	close_candev(net);
+
+	/* FIXME: Wait until the chip has finished transfers? */
 
 	priv->force_quit = 1;
 	free_irq(spi->irq, priv);
