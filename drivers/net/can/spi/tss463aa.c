@@ -155,8 +155,8 @@ static int __must_check tss463aa_hw_spi_trans(struct spi_device *spi, int len)
 	struct spi_transfer t_address = {
 		.tx_buf = priv->spi_tx_buf,
 		.rx_buf = priv->spi_rx_buf,
-		.tx_dma = tss463aa_enable_dma ? priv->spi_tx_dma : 0,
-		.rx_dma = tss463aa_enable_dma ? priv->spi_rx_dma : 0,
+		.tx_dma = priv->spi_tx_dma,
+		.rx_dma = priv->spi_rx_dma,
 		.len = 1,
 		.delay_usecs = XTAL_us(8),
 	};
@@ -1559,10 +1559,9 @@ static int tss463aa_can_probe(struct spi_device *spi)
 			/* Fall back to non-DMA */
 			tss463aa_enable_dma = 0;
 		}
-	}
-
-	/* Allocate non-DMA buffers */
-	if (!tss463aa_enable_dma) {
+	} else {
+		priv->spi_tx_dma = 0;
+		priv->spi_rx_dma = 0;
 		priv->spi_tx_buf = devm_kzalloc(&spi->dev, TSS463AA_TX_BUF_LEN,
 						GFP_KERNEL);
 		if (!priv->spi_tx_buf) {
