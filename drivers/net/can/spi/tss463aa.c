@@ -53,7 +53,7 @@
 /* TODO: Support EXT some more. */
 /* TODO: Support rearbitration. */
 /* TODO: Support aborting. */
-/* TODO: Support ndo_tx_timeout (and abort there?). */
+/* TODO: Support ndo_tx_timeout (and abort there?).  Also watchdog_timeo. */
 /* Notes on "Reply" requests:
 
 We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "transmit"].
