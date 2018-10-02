@@ -187,6 +187,17 @@ static int __must_check tss463aa_hw_set_up_spi_trans(struct spi_device *spi)
 	memcpy(&priv->t_body, &t_body, sizeof(t_body));
 }
 
+/**
+ * tss463aa_hw_spi_trans - Synchronously transfers an SPI message with
+ * TSS463AA-specific timing.
+ *
+ * The data to send is supposed to be in priv->spi_tx_buf.
+ * The data received (full duplex) is going to be in priv->spi_rx_buf.
+ * LEN is the length of sent data (equal to the length of the rx buffer).
+ *
+ * The return value is 0 if the transfer was successful and -errno
+ * otherwise.
+ */
 static int __must_check tss463aa_hw_spi_trans(struct spi_device *spi, int len)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
@@ -232,18 +243,15 @@ static int __must_check tss463aa_hw_reset(struct spi_device *spi)
 		gpiod_set_value(priv->reset, 1);
 		udelay(XTAL_us(12));
 	}
+
 	/* Perform soft reset and set up Motorola SPI mode */
+
 	priv->spi_tx_buf[0] = 0;
 	priv->spi_tx_buf[1] = 0;
 	ret = tss463aa_hw_spi_trans(spi, 2);
 	if (ret)
 		dev_err(&spi->dev, "soft reset failed.\n");
 	return ret;
-}
-
-static int __must_check tss463aa_hw_probe(struct spi_device *spi)
-{
-	return tss463aa_hw_reset(spi);
 }
 
 #define TSS463AA_REGISTER_READ 0x60
@@ -1326,7 +1334,6 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 				}
 				if ((channel_status & TSS463AA_CHANNELFIELD3_CHRX) != 0 && !priv->our_CHRxs[channel_offset / TSS463AA_CHANNEL_SIZE]) { /* RX occupied */
 					// TODO: Check TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK ?
-					/* WARNING: Make sure that this requests CHRx at the end or otherwise avoid duplicates. */
 
 					u16 id = 0;
 					u8 setup = 0;
@@ -1607,7 +1614,7 @@ static int tss463aa_can_probe(struct spi_device *spi)
 
 	SET_NETDEV_DEV(net, &spi->dev);
 
-	ret = tss463aa_hw_probe(spi);
+	ret = tss463aa_hw_reset(spi);
 	if (ret) {
 		if (ret == -ENODEV)
 			dev_err(&spi->dev, "Cannot initialize %x. Wrong wiring?\n",
