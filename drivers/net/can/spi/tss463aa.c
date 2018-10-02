@@ -51,7 +51,6 @@
 #define CANFD_RNW 0x40
 
 /* TODO: Support EXT some more. */
-/* TODO: Support rearbitration. */
 /* TODO: Support aborting. */
 /* TODO: Support ndo_tx_timeout (and abort there?).  Also watchdog_timeo. */
 /* Notes on "Reply" requests:
@@ -1484,11 +1483,37 @@ static void tss463aa_get_stats64(struct net_device *net, struct rtnl_link_stats6
 	netdev_stats_to_stats64(stats, &net->stats);
 }
 
+#define TSS463AAIOREAR SIOCDEVPRIVATE
+
+static int tss463aa_ndo_ioctl(struct net_device *net, struct ifreq *req, int cmd)
+{
+	int ret;
+	struct tss463aa_priv *priv = netdev_priv(net);
+	struct spi_device *spi = priv->spi;
+	/* FIXME: Check that device is not sleeping/suspended. */
+	switch (cmd) {
+	case TSS463AAIOREAR:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
+		mutex_lock(&priv->tss463aa_lock);
+		ret = tss463aa_hw_write_u8(spi, TSS463AA_COMMAND,
+		                           TSS463AA_COMMAND_REAR |
+		                           ((priv->can.ctrlmode & CAN_CTRLMODE_LOOPBACK)
+		                            ? TSS463AA_COMMAND_IDLE
+		                            : TSS463AA_COMMAND_ACTIVATE));
+		mutex_unlock(&priv->tss463aa_lock);
+		return ret;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static const struct net_device_ops tss463aa_netdev_ops = {
 	.ndo_open = tss463aa_open,
 	.ndo_stop = tss463aa_stop,
 	.ndo_start_xmit = tss463aa_hard_start_xmit,
 	.ndo_get_stats64 = tss463aa_get_stats64,
+	.ndo_do_ioctl = tss463aa_ndo_ioctl,
 };
 
 static const struct of_device_id tss463aa_of_match[] = {
