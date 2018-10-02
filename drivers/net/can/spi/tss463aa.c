@@ -398,7 +398,7 @@ static int __must_check tss463aa_hw_sleep(struct spi_device *spi)
 }
 
 /* Matches a channel we can send messages on. */
-static u8 __must_check tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext, bool rnw, bool rtr)
+static u8 __must_check tss463aa_hw_find_tx_channel(struct spi_device *spi, bool ext, bool rnw, bool rtr)
 {
 	u8 channel_offset;
 	u8 channel;
@@ -483,7 +483,7 @@ static int __must_check tss463aa_tx(struct spi_device *spi, struct canfd_frame *
 	else
 		idt = frame->can_id & CAN_SFF_MASK;
 
-	channel_offset = tss463aa_hw_find_transmission_channel(spi, ext, rnw, rtr);
+	channel_offset = tss463aa_hw_find_tx_channel(spi, ext, rnw, rtr);
 	if (!channel_offset) {
 		dev_err(&spi->dev, "cannot transmit message to %X since no channels are free.\n", idt);
 		/* FIXME: Retry */
