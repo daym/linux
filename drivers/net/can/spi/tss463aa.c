@@ -53,7 +53,6 @@
 /* TODO: Support EXT some more. */
 /* TODO: Support rearbitration. */
 /* TODO: Support aborting. */
-/* TODO: Handle disabled channels better (When CHRx stays 1, that would be misjudged as always-something-there-to-receive). */
 /* TODO: Support ndo_tx_timeout (and abort there?). */
 /* Notes on "Reply" requests:
 
@@ -110,6 +109,10 @@ struct tss463aa_priv {
 	This flag array mostly exists because we don't want to have races checking the actual CHRx - also, the CHRx can intermittently change while listeningchannels is a constant */
 	bool listeningchannels[TSS463AA_CHANNEL_COUNT];
 	bool immediate_reply_channels[TSS463AA_CHANNEL_COUNT];
+	/* Both we and the chip fiddle with the CHRx register bits.  When a message arrives, it will change from 0 to 1.
+	   But also if we don't want to handle a message, it stays 1.  The ISR can't distinguish which it is.
+	   So introduce our values of CHRx here for the ISR to check. */
+	bool our_CHRxs[TSS463AA_CHANNEL_COUNT];
 
 	struct mutex tss463aa_lock;
 
@@ -464,7 +467,7 @@ static int __must_check tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_
 }
 
 /* Precondition: Buffer is not occupied */
-static int __must_check tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
+static int __must_check tss463aa_tx(struct spi_device *spi, struct canfd_frame *frame)
 {
 	u16 idt;
 	u8 channel_offset;
@@ -476,6 +479,7 @@ static int __must_check tss463aa_hw_tx(struct spi_device *spi, struct canfd_fram
 	bool rnw = (frame->flags & CANFD_RNW) != 0;
 	bool rak = (frame->flags & CANFD_DRAK) == 0;
 	u8 len1 = frame->len + 1; /* includes the status dummy */
+	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	if ((frame->can_id & CAN_EFF_FLAG) != 0)
 		idt = frame->can_id & CAN_EFF_MASK;
 	else
@@ -506,8 +510,10 @@ static int __must_check tss463aa_hw_tx(struct spi_device *spi, struct canfd_fram
 		return ret;
 
 	/* Transmit */
-	if (rnw) /* "Reply" request (either sent or received): Allow receiving, once. */
+	if (rnw) { /* "Reply" request (either sent or received): Allow receiving, once. */
+		priv->our_CHRxs[channel_offset / TSS463AA_CHANNEL_SIZE] = false;
 		keep &= ~TSS463AA_CHANNELFIELD3_CHRX;
+	}
 	ret = tss463aa_hw_fiddle_u8(spi, channel_offset + 3, keep, len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT);
 	return ret;
 }
@@ -824,6 +830,7 @@ static int __must_check tss463aa_set_channel_up_from_dt(struct tss463aa_priv *pr
 
 		priv->listeningchannels[channel] = listener;
 		priv->immediate_reply_channels[channel] = immediate_reply;
+		priv->our_CHRxs[channel] = CHRx;
 
 		if (of_property_read_u8(dt_node, "tss463aa,link", &msgpointer) == 0) {
 			msglen = 0;
@@ -872,6 +879,7 @@ static int __must_check tss463aa_set_channel_up_from_dt(struct tss463aa_priv *pr
 		bool drak = (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY) != 0;
 		priv->listeningchannels[channel] = false;
 		priv->immediate_reply_channels[channel] = false;
+		priv->our_CHRxs[channel] = true;
 		return tss463aa_hw_set_channel_up(spi, TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_SIZE * channel, 0, 0, true, true, 0x7F, 0, false/*ext*/, false, true, true, drak);
 	}
 	return 0;
@@ -904,6 +912,8 @@ static int tss463aa_set_channels_up_from_dt(struct spi_device *spi, struct devic
 		ret = tss463aa_hw_set_channel_up(spi, 1, 0, 0, true, true, 32, 31, true/*ext*/, true, false, false, drak);
 		if (ret)
 			return ret;
+		priv->our_CHRxs[0] = false;
+		priv->our_CHRxs[1] = true;
 	}
 	return 0;
 }
@@ -981,7 +991,7 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 	return tss463aa_set_channels_up_from_dt(spi, dt_node);
 }
 
-static int __must_check tss463aa_clear_channels(struct spi_device *spi)
+static int __must_check tss463aa_hw_clear_channels(struct spi_device *spi)
 {
 	u8 channel_offset;
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
@@ -998,7 +1008,7 @@ static int __must_check tss463aa_clear_channels(struct spi_device *spi)
 
 static int __must_check tss463aa_setup(struct spi_device *spi)
 {
-	int ret = tss463aa_clear_channels(spi);
+	int ret = tss463aa_hw_clear_channels(spi);
 	if (ret)
 		return ret;
 	return tss463aa_set_up_from_dt(spi, spi->dev.of_node);
@@ -1038,7 +1048,7 @@ static int __must_check tss463aa_stop(struct net_device *net)
 	mutex_lock(&priv->tss463aa_lock);
 
 	/* Disable transmission&reception, disable interrupts and clear flags. */
-	ret = tss463aa_clear_channels(spi);
+	ret = tss463aa_hw_clear_channels(spi);
 	if (ret)
 		netdev_err(net, "could not clear channels.\n");
 	ret = tss463aa_hw_write_u8(spi, TSS463AA_INTE, 0x0);
@@ -1075,7 +1085,7 @@ static void tss463aa_tx_work_handler(struct work_struct *ws)
 		} else {
 			int ret;
 			frame = (struct canfd_frame *)priv->tx_skb->data;
-			ret = tss463aa_hw_tx(spi, frame);
+			ret = tss463aa_tx(spi, frame);
 			if (ret == -EBUSY) {
 				/* See interrupt handler for the case where it retries. */
 			} else if (ret) { /* error */
@@ -1312,7 +1322,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 					if (ret)
 						dev_err(&spi->dev, "could not clear error.\n");
 				}
-				if ((channel_status & TSS463AA_CHANNELFIELD3_CHRX) != 0) { /* RX occupied */
+				if ((channel_status & TSS463AA_CHANNELFIELD3_CHRX) != 0 && !priv->our_CHRxs[channel_offset / TSS463AA_CHANNEL_SIZE]) { /* RX occupied */
 					// TODO: Check TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK ?
 					/* WARNING: Make sure that this requests CHRx at the end or otherwise avoid duplicates. */
 
@@ -1324,12 +1334,11 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 						dev_err(&spi->dev, "could not read channel setup.\n");
 					} else {
 						ret = tss463aa_hw_rx(spi, channel_offset, id);
-						if (ret) {
+						if (ret)
 							dev_err(&spi->dev, "could not read message.\n");
-							continue;
-						}
 					}
 					if ((setup & TSS463AA_CHANNELFIELD1_RNW) != 0) {
+						priv->our_CHRxs[channel_offset / TSS463AA_CHANNEL_SIZE] = true; /* Disable reception. */
 						/* "Reply" requests don't receive automatically. */
 						if ((setup & (TSS463AA_CHANNELFIELD1_RNW | TSS463AA_CHANNELFIELD1_RTR)) == (TSS463AA_CHANNELFIELD1_RNW | TSS463AA_CHANNELFIELD1_RTR)) { /* RNW, RTR. So a Reply request. */
 							/* If there was an in-frame reply by another module,
