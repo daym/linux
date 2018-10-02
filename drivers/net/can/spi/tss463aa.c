@@ -1501,7 +1501,6 @@ static int tss463aa_can_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 	of_id = of_match_node(tss463aa_of_match, dt_node); /* FIXME: Or of_match_device(tss463aa_of_match, &spi->dev);*/
-	/* FIXME do that differently? For example read property xtal-clock-frequency */
 	clk = devm_clk_get(&spi->dev, NULL);
 	if (IS_ERR(clk)) {
 		dev_err(&spi->dev, "no chip clock source defined\n");
@@ -1512,8 +1511,6 @@ static int tss463aa_can_probe(struct spi_device *spi)
 		dev_err(&spi->dev, "XTAL clock frequency is so low we can't calibrate our delays anymore.\n");
 		return -EPERM;
 	}
-	/* of_property_read_u32(dt_node, "xtal-clock-frequency",
-	                        &priv->xtal_clock_frequency); */
 
 	/* Sanity check */
 	if (freq > 8000000)
