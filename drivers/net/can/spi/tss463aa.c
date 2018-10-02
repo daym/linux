@@ -83,7 +83,6 @@ enum tss463aa_model {
 	CAN_TSS463AA_TSS463AA = 0x4631,
 };
 
-/* TODO: CAN_CTRLMODE_LOOPBACK */
 /* TODO: Allow setting CAN FD "data" bit rate (which must be at least as high as the arbitration bitrate) */
 
 /* Note: These contain the sizes of the driver's SPI buffers.
@@ -775,7 +774,10 @@ static int __must_check tss463aa_activate(struct spi_device *spi)
 		return ret;
 
 	/* Start transmitting/receiving on the VAN bus */
-	ret = tss463aa_hw_write_u8(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_ACTIVATE);
+	ret = tss463aa_hw_write_u8(spi, TSS463AA_COMMAND,
+	                           (priv->can.ctrlmode & CAN_CTRLMODE_LOOPBACK)
+	                           ? TSS463AA_COMMAND_IDLE
+	                           : TSS463AA_COMMAND_ACTIVATE);
 	if (ret)
 		return ret;
 
@@ -940,7 +942,8 @@ static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct d
 	                             TSS463AA_LINE_CONTROL_IVRX : 0) |
 	                            (of_property_read_bool(dt_node, "tss463aa,invert-tx") ?
 	                             TSS463AA_LINE_CONTROL_IVTX : 0) |
-	                            (of_property_read_bool(dt_node, "tss463aa,pulse-coded-modulation") ?
+	                            /* PC line control enables internal loopback */
+	                            ((of_property_read_bool(dt_node, "tss463aa,pulse-coded-modulation") || (priv->can.ctrlmode & CAN_CTRLMODE_LOOPBACK)) ?
 	                             TSS463AA_LINE_CONTROL_PC : 0));
 	if (ret)
 		return ret;
@@ -1531,7 +1534,7 @@ static int tss463aa_can_probe(struct spi_device *spi)
 	/* priv->can.do_set_data_bittiming */
 	priv->can.do_set_mode = tss463aa_set_mode;
 	priv->can.clock.freq = freq /* / 16*/; /* Note: TS/s */
-	priv->can.ctrlmode_supported = CAN_CTRLMODE_FD | CAN_CTRLMODE_LISTENONLY;
+	priv->can.ctrlmode_supported = CAN_CTRLMODE_FD | CAN_CTRLMODE_LISTENONLY | CAN_CTRLMODE_LOOPBACK;
 	can_set_static_ctrlmode(net, CAN_CTRLMODE_FD_NON_ISO);
 
 	if (of_id)
