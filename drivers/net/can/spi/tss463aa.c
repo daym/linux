@@ -441,9 +441,9 @@ static u8 __must_check tss463aa_hw_find_tx_channel(struct spi_device *spi, bool 
 
 		/* This is racy - but a sanity check only. */
 		BUG_ON(need_receiver_free && (status & TSS463AA_CHANNELFIELD3_CHRX) == 0);
-		return channel_offset;
+		return channel;
 	}
-	return 0;
+	return TSS463AA_CHANNEL_COUNT;
 }
 
 /* Precondition: Buffer is not occupied */
@@ -477,6 +477,7 @@ static int __must_check tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_
 static int __must_check tss463aa_tx(struct spi_device *spi, struct canfd_frame *frame)
 {
 	u16 idt;
+	u8 channel;
 	u8 channel_offset;
 	u8 ret;
 	u8 keep = TSS463AA_CHANNELFIELD3_CHRX |
@@ -492,12 +493,13 @@ static int __must_check tss463aa_tx(struct spi_device *spi, struct canfd_frame *
 	else
 		idt = frame->can_id & CAN_SFF_MASK;
 
-	channel_offset = tss463aa_hw_find_tx_channel(spi, ext, rnw, rtr);
-	if (!channel_offset) {
+	channel = tss463aa_hw_find_tx_channel(spi, ext, rnw, rtr);
+	if (channel >= TSS463AA_CHANNEL_COUNT) {
 		dev_err(&spi->dev, "cannot transmit message to %X since no channels are free.\n", idt);
 		/* FIXME: Retry */
 		return -EBUSY;
 	}
+	channel_offset = TSS463AA_CHANNEL0_OFFSET + channel * TSS463AA_CHANNEL_SIZE;
 
 	ret = tss463aa_hw_write_u8(spi, channel_offset, idt >> 4);
 	if (ret)
@@ -518,7 +520,7 @@ static int __must_check tss463aa_tx(struct spi_device *spi, struct canfd_frame *
 
 	/* Transmit */
 	if (rnw) { /* "Reply" request (either sent or received): Allow receiving, once. */
-		priv->our_CHRxs[channel_offset / TSS463AA_CHANNEL_SIZE] = false;
+		priv->our_CHRxs[channel] = false;
 		keep &= ~TSS463AA_CHANNELFIELD3_CHRX;
 	}
 	ret = tss463aa_hw_fiddle_u8(spi, channel_offset + 3, keep, len1 << TSS463AA_CHANNELFIELD3_MSGLEN_SHIFT);
@@ -1323,19 +1325,22 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 			}
 		}
 
-		if (intf & (TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK | TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE | TSS463AA_INTERRUPT_STATUS_RE))
-			for (channel_offset = TSS463AA_CHANNEL0_OFFSET; channel_offset < TSS463AA_CHANNEL0_OFFSET + TSS463AA_CHANNEL_COUNT * TSS463AA_CHANNEL_SIZE; channel_offset += TSS463AA_CHANNEL_SIZE) {
+		if (intf & (TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK | TSS463AA_INTERRUPT_STATUS_TOK | TSS463AA_INTERRUPT_STATUS_TE | TSS463AA_INTERRUPT_STATUS_RE)) {
+			u8 channel;
+			for (channel_offset = TSS463AA_CHANNEL0_OFFSET, channel = 0;
+			     channel < TSS463AA_CHANNEL_SIZE;
+			     ++channel, channel_offset += TSS463AA_CHANNEL_SIZE) {
 				u8 channel_status = tss463aa_hw_read_u8(spi, channel_offset + 3);
-				if ((channel_status & TSS463AA_CHANNELFIELD3_CHER) != 0) {
+				if (unlikely((channel_status & TSS463AA_CHANNELFIELD3_CHER) != 0)) {
 					int ret;
 					/* TODO: Get error (if possible) */
-					dev_warn(&spi->dev, "channel with offset %u logged an error. Clearing it.\n", channel_offset);
+					dev_warn(&spi->dev, "channel %u logged an error. Clearing it.\n", channel);
 					channel_status &= ~TSS463AA_CHANNELFIELD3_CHER;
 					ret = tss463aa_hw_write_u8(spi, channel_offset + 3, channel_status);
 					if (ret)
 						dev_err(&spi->dev, "could not clear error.\n");
 				}
-				if ((channel_status & TSS463AA_CHANNELFIELD3_CHRX) != 0 && !priv->our_CHRxs[channel_offset / TSS463AA_CHANNEL_SIZE]) { /* RX occupied */
+				if ((channel_status & TSS463AA_CHANNELFIELD3_CHRX) != 0 && !priv->our_CHRxs[channel]) { /* RX occupied */
 					// TODO: Check TSS463AA_INTERRUPT_STATUS_RNOK | TSS463AA_INTERRUPT_STATUS_ROK ?
 
 					u16 id = 0;
@@ -1350,7 +1355,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							dev_err(&spi->dev, "could not read message.\n");
 					}
 					if ((setup & TSS463AA_CHANNELFIELD1_RNW) != 0) {
-						priv->our_CHRxs[channel_offset / TSS463AA_CHANNEL_SIZE] = true; /* Disable reception. */
+						priv->our_CHRxs[channel] = true; /* Disable reception. */
 						/* "Reply" requests don't receive automatically. */
 						if ((setup & (TSS463AA_CHANNELFIELD1_RNW | TSS463AA_CHANNELFIELD1_RTR)) == (TSS463AA_CHANNELFIELD1_RNW | TSS463AA_CHANNELFIELD1_RTR)) { /* RNW, RTR. So a Reply request. */
 							/* If there was an in-frame reply by another module,
@@ -1362,8 +1367,8 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 							channel_status |= TSS463AA_CHANNELFIELD3_CHTX;
 							tss463aa_hw_write_u8(spi, channel_offset + 3, channel_status);
 						}
-					} else if (priv->listeningchannels[channel_offset / TSS463AA_CHANNEL_SIZE]) {
-						if (priv->immediate_reply_channels[channel_offset / TSS463AA_CHANNEL_SIZE]) {
+					} else if (priv->listeningchannels[channel]) {
+						if (priv->immediate_reply_channels[channel]) {
 							/* Load the immediate reply again */
 							tss463aa_hw_write_u8(spi, channel_offset + 3, channel_status &~ (TSS463AA_CHANNELFIELD3_CHRX | TSS463AA_CHANNELFIELD3_CHTX));
 						} else {
@@ -1391,6 +1396,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 					}
 				}
 			}
+		}
 
 		if (intf & (TSS463AA_INTERRUPT_STATUS_TE | TSS463AA_INTERRUPT_STATUS_RE))
 			tss463aa_can_error(priv, (intf & TSS463AA_INTERRUPT_STATUS_TE) != 0);
