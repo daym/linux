@@ -215,7 +215,7 @@ static int __must_check tss463aa_hw_spi_trans(struct spi_device *spi, int len)
 	} else if (priv->spi_rx_buf[0] == 0xAA && priv->spi_rx_buf[1] == 0x55) {
 	} else {
 		dev_err(&spi->dev, "chip is out of sync\n");
-		/* TODO: Reset etc (with delay) */
+		ret = -EIO;
 	}
 	return ret;
 }
