@@ -179,7 +179,6 @@ static int __must_check tss463aa_hw_set_up_spi_trans(struct spi_device *spi)
 		.tx_dma = tss463aa_enable_dma ? priv->spi_tx_dma + 2 : 0,
 		.rx_dma = tss463aa_enable_dma ? priv->spi_rx_dma + 2 : 0,
 		.len = 0,
-		.cs_change = 0,
 		.delay_usecs = XTAL_us(12),
 	};
 	memcpy(&priv->t_lead, &t_lead, sizeof(t_lead));
