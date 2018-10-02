@@ -44,11 +44,9 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 
-/* If we do not want an ACK and must not get one. */
-#define CANFD_DRAK 0x80
-
-/* If an ACK was requested by the sender (FYI only). */
-#define CANFD_RAK 0x20
+/* Sender: If we do not want an ACK and must not get one.
+   Receiver: If an ACK was requested by the sender (FYI only) */
+#define CANFD_DRAK 0x20
 
 /* "Reply" request, f.e. read-register. */
 #define CANFD_RNW 0x40
@@ -563,8 +561,8 @@ static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
 		frame->can_id |= CAN_RTR_FLAG;
 	if (buf[0] & 0x40)
 		frame->flags |= CANFD_RNW;
-	if ((buf[0] & 0x80) != 0)
-		frame->flags |= CANFD_RAK;
+	if ((buf[0] & 0x80) == 0)
+		frame->flags |= CANFD_DRAK;
 	/* Note: A combination RNW = 0 (write) && RTR = 1 will never happen (VAN standard). */
 
 	frame->can_id = id | CAN_EFF_FLAG; /* Note: CAN IDs have 29 bits. */
