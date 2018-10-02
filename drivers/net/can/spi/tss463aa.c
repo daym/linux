@@ -51,8 +51,6 @@
 #define CANFD_RNW 0x40
 
 /* TODO: Support EXT some more. */
-/* TODO: Support aborting. */
-/* TODO: Support ndo_tx_timeout (and abort there?).  Also watchdog_timeo. */
 /* Notes on "Reply" requests:
 
 We send a Reply request: RNW=1, RTR=1, CHTx=0, CHRx=0 [somewhat like "transmit"].
@@ -1485,6 +1483,16 @@ static void tss463aa_get_stats64(struct net_device *net, struct rtnl_link_stats6
 
 #define TSS463AAIOREAR SIOCDEVPRIVATE
 
+static void tss463aa_ndo_tx_timeout(struct net_device *net)
+{
+	struct tss463aa_priv *priv = netdev_priv(net);
+	struct spi_device *spi = priv->spi;
+	net->stats.tx_dropped++;
+	netif_trans_update(net);
+	/* FIXME: Set CHER for the channel of the affected packet (good luck). */
+	netif_start_queue(net);
+}
+
 static int tss463aa_ndo_ioctl(struct net_device *net, struct ifreq *req, int cmd)
 {
 	int ret;
@@ -1514,6 +1522,7 @@ static const struct net_device_ops tss463aa_netdev_ops = {
 	.ndo_start_xmit = tss463aa_hard_start_xmit,
 	.ndo_get_stats64 = tss463aa_get_stats64,
 	.ndo_do_ioctl = tss463aa_ndo_ioctl,
+	.ndo_tx_timeout = tss463aa_ndo_tx_timeout,
 };
 
 static const struct of_device_id tss463aa_of_match[] = {
@@ -1574,6 +1583,7 @@ static int tss463aa_can_probe(struct spi_device *spi)
 		goto out_free;
 
 	net->netdev_ops = &tss463aa_netdev_ops;
+	net->watchdog_timeo = 1 * HZ; /* 1 s (way too long) */
 	net->flags |= IFF_ECHO;
 
 	priv = netdev_priv(net);
