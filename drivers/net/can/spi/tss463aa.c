@@ -86,7 +86,7 @@ enum tss463aa_model {
 /* TODO: Allow setting CAN FD "data" bit rate (which must be at least as high as the arbitration bitrate) */
 
 /* Note: These contain the sizes of the driver's SPI buffers.
-The chip buffer can't hold more than 31 Byte.
+The chip buffer can't hold more than 31 Byte (per payload message).
 But this here needs to fit "address" and "control" as well. */
 
 #define TSS463AA_RX_BUF_LEN 33
