@@ -1287,8 +1287,10 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 	mutex_lock(&priv->tss463aa_lock);
 
 	intf = tss463aa_hw_read_u8(spi, TSS463AA_INTERRUPT_STATUS) & TSS463AA_INTERRUPT_STATUS_MASK;
-	if (!intf)
+	if (!intf) {
+		mutex_unlock(&priv->tss463aa_lock);
 		return IRQ_NONE;
+	}
 
 	while (!priv->force_quit) {
 		enum can_state new_state;
