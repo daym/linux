@@ -1590,7 +1590,9 @@ static int tss463aa_can_probe(struct spi_device *spi)
 			goto error_probe;
 		}
 	}
-	tss463aa_hw_set_up_spi_trans(spi);
+	ret = tss463aa_hw_set_up_spi_trans(spi);
+	if (ret)
+		goto error_probe;
 
 	SET_NETDEV_DEV(net, &spi->dev);
 
