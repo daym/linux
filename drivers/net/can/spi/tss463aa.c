@@ -142,8 +142,7 @@ struct tss463aa_priv {
 /* Note: assert XTAL < (MAX_UDELAY_MS 1000 us = 5000 us) for udelay to work. */
 #define XTAL_us(cycles) DIV_ROUND_UP(((cycles)*1000000), priv->xtal_clock_frequency)
 
-__attribute__((warn_unused_result))
-static int tss463aa_hw_spi_trans(struct spi_device *spi, int len)
+static int __must_check tss463aa_hw_spi_trans(struct spi_device *spi, int len)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	BUG_ON(len < 2);
@@ -206,8 +205,7 @@ static int tss463aa_hw_spi_trans(struct spi_device *spi, int len)
 }
 
 /* Postcondition: Chip is in IDLE mode. */
-__attribute__((warn_unused_result))
-static int tss463aa_hw_reset(struct spi_device *spi)
+static int __must_check tss463aa_hw_reset(struct spi_device *spi)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	int ret;
@@ -228,8 +226,7 @@ static int tss463aa_hw_reset(struct spi_device *spi)
 	return ret;
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_hw_probe(struct spi_device *spi)
+static int __must_check tss463aa_hw_probe(struct spi_device *spi)
 {
 	return tss463aa_hw_reset(spi);
 }
@@ -237,8 +234,7 @@ static int tss463aa_hw_probe(struct spi_device *spi)
 #define TSS463AA_REGISTER_READ 0x60
 #define TSS463AA_REGISTER_WRITE 0xE0
 
-__attribute__((warn_unused_result))
-static u8 tss463aa_hw_read(struct spi_device *spi, u8 reg)
+static u8 __must_check tss463aa_hw_read(struct spi_device *spi, u8 reg)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	u8 val = 0;
@@ -257,8 +253,7 @@ static u8 tss463aa_hw_read(struct spi_device *spi, u8 reg)
 	return val;
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
+static int __must_check tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	int ret;
@@ -300,8 +295,7 @@ static int tss463aa_hw_write(struct spi_device *spi, u8 reg, u8 val)
 The channel ID is stored into out_id, which is not optional.
 The channel setup is stored into out_setup, if that is provided.
 */
-__attribute__((warn_unused_result))
-static int tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* out_id, u8* out_setup)
+static int __must_check tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* out_id, u8* out_setup)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	int ret;
@@ -321,8 +315,7 @@ static int tss463aa_hw_read_id(struct spi_device *spi, u8 channel_offset, u16* o
 	return 0;
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_hw_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
+static int __must_check tss463aa_hw_set_channel_up(struct spi_device *spi, u8 offset, u16 idtag, u16 idmask, bool CHTx, bool CHRx, u8 msgpointer, u8 msglen, bool ext, bool rak, bool rnw, bool rtr, bool drak)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
@@ -360,8 +353,7 @@ static int tss463aa_hw_set_channel_up(struct spi_device *spi, u8 offset, u16 idt
 #define TSS463AA_COMMAND_MSDC BIT(0)
 
 /* Note: To wake up, call tss463aa_reset. */
-__attribute__((warn_unused_result))
-static int tss463aa_hw_sleep(struct spi_device *spi)
+static int __must_check tss463aa_hw_sleep(struct spi_device *spi)
 {
 	int ret = tss463aa_hw_write(spi, TSS463AA_COMMAND, TSS463AA_COMMAND_SLEEP);
 	/* TODO: Poll line status to see whether it was done already? */
@@ -371,8 +363,7 @@ static int tss463aa_hw_sleep(struct spi_device *spi)
 }
 
 /* Matches a channel we can send messages on. */
-__attribute__((warn_unused_result))
-static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext, bool rnw, bool rtr)
+static u8 __must_check tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext, bool rnw, bool rtr)
 {
 	u8 channel_offset;
 	u8 channel;
@@ -413,8 +404,7 @@ static u8 tss463aa_hw_find_transmission_channel(struct spi_device *spi, bool ext
 }
 
 /* Precondition: Buffer is not occupied */
-__attribute__((warn_unused_result))
-static int tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_offset, u8 *buf, unsigned len)
+static int __must_check tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_offset, u8 *buf, unsigned len)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 
@@ -441,8 +431,7 @@ static int tss463aa_hw_tx_frame(struct spi_device *spi, u8 channel_offset, u8 *b
 }
 
 /* Precondition: Buffer is not occupied */
-__attribute__((warn_unused_result))
-static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
+static int __must_check tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 {
 	u16 idt;
 	u8 channel_offset;
@@ -493,8 +482,7 @@ static int tss463aa_hw_tx(struct spi_device *spi, struct canfd_frame *frame)
 }
 
 /* Precondition: There is a message to be received already. */
-__attribute__((warn_unused_result))
-static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
+static int __must_check tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
 {
 	int ret;
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
@@ -530,8 +518,7 @@ static int tss463aa_hw_rx_frame(struct spi_device *spi, u8 channel_offset)
 }
 
 /* Precondition: There is a message to be received already. */
-__attribute__((warn_unused_result))
-static int tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
+static int __must_check tss463aa_hw_rx(struct spi_device *spi, u8 channel_offset, u16 id)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	u8* buf;
@@ -598,8 +585,7 @@ static const struct can_bittiming_const tss463aa_canfd_nominal_bittiming_const =
 };
 
 /* Precondition: Device is down */
-__attribute__((warn_unused_result))
-static int tss463aa_set_bittiming(struct net_device *dev)
+static int __must_check tss463aa_set_bittiming(struct net_device *dev)
 {
 	struct tss463aa_priv *priv = netdev_priv(dev);
 	struct spi_device *spi = priv->spi;
@@ -651,8 +637,7 @@ static int tss463aa_set_bittiming(struct net_device *dev)
 #define TSS463AA_DIAGNOSTIC_CONTROL_SDC_MASK 240
 
 /* Precondition: TX not busy. */
-__attribute__((warn_unused_result))
-static netdev_tx_t tss463aa_hard_start_xmit(struct sk_buff *skb, struct net_device *net)
+static netdev_tx_t __must_check tss463aa_hard_start_xmit(struct sk_buff *skb, struct net_device *net)
 {
 	struct tss463aa_priv *priv = netdev_priv(net);
 	struct spi_device *spi = priv->spi;
@@ -686,8 +671,7 @@ static void tss463aa_clean(struct net_device *net)
 	priv->tx_len = 0;
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_set_mode(struct net_device *net, enum can_mode mode)
+static int __must_check tss463aa_set_mode(struct net_device *net, enum can_mode mode)
 {
 	struct tss463aa_priv *priv = netdev_priv(net);
 
@@ -744,8 +728,7 @@ static int tss463aa_set_mode(struct net_device *net, enum can_mode mode)
 #define TSS463AA_INTERRUPT_RESET 0x0b
 #define TSS463AA_INTERRUPT_RESET_MASK 0x9f
 
-__attribute__((warn_unused_result))
-static int tss463aa_activate(struct spi_device *spi)
+static int __must_check tss463aa_activate(struct spi_device *spi)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	int ret;
@@ -768,8 +751,7 @@ static int tss463aa_activate(struct spi_device *spi)
 
 /* Given a DT node and channel number, sets up the TSS463AA accordingly (also taking into account CAN).
 Precondition: Device is not up. */
-__attribute__((warn_unused_result))
-static int tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 channel, struct device_node *dt_node)
+static int __must_check tss463aa_set_channel_up_from_dt(struct tss463aa_priv *priv, __u8 channel, struct device_node *dt_node)
 {
 	struct spi_device *spi = priv->spi;
 	if (channel >= TSS463AA_CHANNEL_COUNT) {
@@ -900,8 +882,7 @@ static int tss463aa_set_channels_up_from_dt(struct spi_device *spi, struct devic
 
 /* Given a DT node, sets up the TSS463AA accordingly.
 Precondition: Device is not up. */
-__attribute__((warn_unused_result))
-static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *dt_node)
+static int __must_check tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *dt_node)
 {
 	struct tss463aa_priv *priv = spi_get_drvdata(spi);
 	__u8 transmission_retry_count = 0;
@@ -976,8 +957,7 @@ static int tss463aa_set_up_from_dt(struct spi_device *spi, struct device_node *d
 	return tss463aa_set_channels_up_from_dt(spi, dt_node);
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_clear_channels(struct spi_device *spi)
+static int __must_check tss463aa_clear_channels(struct spi_device *spi)
 {
 	int ret;
 	u8 channel_offset;
@@ -993,8 +973,7 @@ static int tss463aa_clear_channels(struct spi_device *spi)
 	return 0;
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_setup(struct spi_device *spi)
+static int __must_check tss463aa_setup(struct spi_device *spi)
 {
 	int ret = tss463aa_clear_channels(spi);
 	if (ret)
@@ -1002,8 +981,7 @@ static int tss463aa_setup(struct spi_device *spi)
 	return tss463aa_set_up_from_dt(spi, spi->dev.of_node);
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_power_enable(struct spi_device *spi, struct regulator *reg, int enable)
+static int __must_check tss463aa_power_enable(struct spi_device *spi, struct regulator *reg, int enable)
 {
 	if (IS_ERR_OR_NULL(reg))
 		return 0;
@@ -1021,8 +999,7 @@ static int tss463aa_power_enable(struct spi_device *spi, struct regulator *reg, 
 	}
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_stop(struct net_device *net)
+static int __must_check tss463aa_stop(struct net_device *net)
 {
 	struct tss463aa_priv *priv = netdev_priv(net);
 	struct spi_device *spi = priv->spi;
@@ -1379,8 +1356,7 @@ static irqreturn_t tss463aa_can_ist(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-__attribute__((warn_unused_result))
-static int tss463aa_open(struct net_device *net)
+static int __must_check tss463aa_open(struct net_device *net)
 {
 	struct tss463aa_priv *priv = netdev_priv(net);
 	struct spi_device *spi = priv->spi;
