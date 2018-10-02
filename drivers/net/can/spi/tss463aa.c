@@ -197,7 +197,7 @@ static int __must_check tss463aa_hw_spi_trans(struct spi_device *spi, int len)
 	spi_message_init(&m);
 	if (tss463aa_enable_dma)
 		m.is_dma_mapped = 1;
-	priv->t_body = len - 2;
+	priv->t_body.len = len - 2;
 	spi_message_add_tail(&priv->t_lead, &m);
 	spi_message_add_tail(&priv->t_address, &m);
 	spi_message_add_tail(&priv->t_control, &m);
