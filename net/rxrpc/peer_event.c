@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Peer event handling, typically ICMP messages.
  *
  * Copyright (C) 2007 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/module.h>
@@ -23,6 +19,8 @@
 #include "ar-internal.h"
 
 static void rxrpc_store_error(struct rxrpc_peer *, struct sock_exterr_skb *);
+static void rxrpc_distribute_error(struct rxrpc_peer *, int,
+				   enum rxrpc_call_completion);
 
 /*
  * Find the peer associated with an ICMP packet.
@@ -45,6 +43,8 @@ static struct rxrpc_peer *rxrpc_lookup_peer_icmp_rcu(struct rxrpc_local *local,
 	 */
 	switch (srx->transport.family) {
 	case AF_INET:
+		srx->transport_len = sizeof(srx->transport.sin);
+		srx->transport.family = AF_INET;
 		srx->transport.sin.sin_port = serr->port;
 		switch (serr->ee.ee_origin) {
 		case SO_EE_ORIGIN_ICMP:
@@ -68,20 +68,20 @@ static struct rxrpc_peer *rxrpc_lookup_peer_icmp_rcu(struct rxrpc_local *local,
 
 #ifdef CONFIG_AF_RXRPC_IPV6
 	case AF_INET6:
-		srx->transport.sin6.sin6_port = serr->port;
 		switch (serr->ee.ee_origin) {
 		case SO_EE_ORIGIN_ICMP6:
 			_net("Rx ICMP6");
+			srx->transport.sin6.sin6_port = serr->port;
 			memcpy(&srx->transport.sin6.sin6_addr,
 			       skb_network_header(skb) + serr->addr_offset,
 			       sizeof(struct in6_addr));
 			break;
 		case SO_EE_ORIGIN_ICMP:
 			_net("Rx ICMP on v6 sock");
-			srx->transport.sin6.sin6_addr.s6_addr32[0] = 0;
-			srx->transport.sin6.sin6_addr.s6_addr32[1] = 0;
-			srx->transport.sin6.sin6_addr.s6_addr32[2] = htonl(0xffff);
-			memcpy(srx->transport.sin6.sin6_addr.s6_addr + 12,
+			srx->transport_len = sizeof(srx->transport.sin);
+			srx->transport.family = AF_INET;
+			srx->transport.sin.sin_port = serr->port;
+			memcpy(&srx->transport.sin.sin_addr,
 			       skb_network_header(skb) + serr->addr_offset,
 			       sizeof(struct in_addr));
 			break;
@@ -153,16 +153,21 @@ void rxrpc_error_report(struct sock *sk)
 
 	_enter("%p{%d}", sk, local->debug_id);
 
+	/* Clear the outstanding error value on the socket so that it doesn't
+	 * cause kernel_sendmsg() to return it later.
+	 */
+	sock_error(sk);
+
 	skb = sock_dequeue_err_skb(sk);
 	if (!skb) {
 		_leave("UDP socket errqueue empty");
 		return;
 	}
-	rxrpc_new_skb(skb, rxrpc_skb_rx_received);
+	rxrpc_new_skb(skb, rxrpc_skb_received);
 	serr = SKB_EXT_ERR(skb);
 	if (!skb->len && serr->ee.ee_origin == SO_EE_ORIGIN_TIMESTAMPING) {
 		_leave("UDP empty message");
-		rxrpc_free_skb(skb, rxrpc_skb_rx_freed);
+		rxrpc_free_skb(skb, rxrpc_skb_freed);
 		return;
 	}
 
@@ -172,7 +177,7 @@ void rxrpc_error_report(struct sock *sk)
 		peer = NULL;
 	if (!peer) {
 		rcu_read_unlock();
-		rxrpc_free_skb(skb, rxrpc_skb_rx_freed);
+		rxrpc_free_skb(skb, rxrpc_skb_freed);
 		_leave(" [no peer]");
 		return;
 	}
@@ -184,7 +189,7 @@ void rxrpc_error_report(struct sock *sk)
 	     serr->ee.ee_code == ICMP_FRAG_NEEDED)) {
 		rxrpc_adjust_mtu(peer, serr);
 		rcu_read_unlock();
-		rxrpc_free_skb(skb, rxrpc_skb_rx_freed);
+		rxrpc_free_skb(skb, rxrpc_skb_freed);
 		rxrpc_put_peer(peer);
 		_leave(" [MTU update]");
 		return;
@@ -192,10 +197,9 @@ void rxrpc_error_report(struct sock *sk)
 
 	rxrpc_store_error(peer, serr);
 	rcu_read_unlock();
-	rxrpc_free_skb(skb, rxrpc_skb_rx_freed);
+	rxrpc_free_skb(skb, rxrpc_skb_freed);
+	rxrpc_put_peer(peer);
 
-	/* The ref we obtained is passed off to the work item */
-	__rxrpc_queue_peer_error(peer);
 	_leave("");
 }
 
@@ -205,6 +209,7 @@ void rxrpc_error_report(struct sock *sk)
 static void rxrpc_store_error(struct rxrpc_peer *peer,
 			      struct sock_exterr_skb *serr)
 {
+	enum rxrpc_call_completion compl = RXRPC_CALL_NETWORK_ERROR;
 	struct sock_extended_err *ee;
 	int err;
 
@@ -255,7 +260,7 @@ static void rxrpc_store_error(struct rxrpc_peer *peer,
 	case SO_EE_ORIGIN_NONE:
 	case SO_EE_ORIGIN_LOCAL:
 		_proto("Rx Received local error { error=%d }", err);
-		err += RXRPC_LOCAL_ERROR_OFFSET;
+		compl = RXRPC_CALL_LOCAL_ERROR;
 		break;
 
 	case SO_EE_ORIGIN_ICMP6:
@@ -264,48 +269,23 @@ static void rxrpc_store_error(struct rxrpc_peer *peer,
 		break;
 	}
 
-	peer->error_report = err;
+	rxrpc_distribute_error(peer, err, compl);
 }
 
 /*
- * Distribute an error that occurred on a peer
+ * Distribute an error that occurred on a peer.
  */
-void rxrpc_peer_error_distributor(struct work_struct *work)
+static void rxrpc_distribute_error(struct rxrpc_peer *peer, int error,
+				   enum rxrpc_call_completion compl)
 {
-	struct rxrpc_peer *peer =
-		container_of(work, struct rxrpc_peer, error_distributor);
 	struct rxrpc_call *call;
-	enum rxrpc_call_completion compl;
-	int error;
 
-	_enter("");
-
-	error = READ_ONCE(peer->error_report);
-	if (error < RXRPC_LOCAL_ERROR_OFFSET) {
-		compl = RXRPC_CALL_NETWORK_ERROR;
-	} else {
-		compl = RXRPC_CALL_LOCAL_ERROR;
-		error -= RXRPC_LOCAL_ERROR_OFFSET;
-	}
-
-	_debug("ISSUE ERROR %s %d", rxrpc_call_completions[compl], error);
-
-	spin_lock_bh(&peer->lock);
-
-	while (!hlist_empty(&peer->error_targets)) {
-		call = hlist_entry(peer->error_targets.first,
-				   struct rxrpc_call, error_link);
-		hlist_del_init(&call->error_link);
+	hlist_for_each_entry_rcu(call, &peer->error_targets, error_link) {
 		rxrpc_see_call(call);
-
-		if (rxrpc_set_call_completion(call, compl, 0, -error))
+		if (call->state < RXRPC_CALL_COMPLETE &&
+		    rxrpc_set_call_completion(call, compl, 0, -error))
 			rxrpc_notify_socket(call);
 	}
-
-	spin_unlock_bh(&peer->lock);
-
-	rxrpc_put_peer(peer);
-	_leave("");
 }
 
 /*
@@ -325,6 +305,8 @@ void rxrpc_peer_add_rtt(struct rxrpc_call *call, enum rxrpc_rtt_rx_trace why,
 	if (rtt < 0)
 		return;
 
+	spin_lock(&peer->rtt_input_lock);
+
 	/* Replace the oldest datum in the RTT buffer */
 	sum -= peer->rtt_cache[cursor];
 	sum += rtt;
@@ -336,6 +318,8 @@ void rxrpc_peer_add_rtt(struct rxrpc_call *call, enum rxrpc_rtt_rx_trace why,
 		peer->rtt_usage = usage;
 	}
 
+	spin_unlock(&peer->rtt_input_lock);
+
 	/* Now recalculate the average */
 	if (usage == RXRPC_RTT_CACHE_SIZE) {
 		avg = sum / RXRPC_RTT_CACHE_SIZE;
@@ -344,6 +328,7 @@ void rxrpc_peer_add_rtt(struct rxrpc_call *call, enum rxrpc_rtt_rx_trace why,
 		do_div(avg, usage);
 	}
 
+	/* Don't need to update this under lock */
 	peer->rtt = avg;
 	trace_rxrpc_rtt_rx(call, why, send_serial, resp_serial, rtt,
 			   usage, avg);
@@ -393,7 +378,7 @@ static void rxrpc_peer_keepalive_dispatch(struct rxrpc_net *rxnet,
 		spin_lock_bh(&rxnet->peer_hash_lock);
 		list_add_tail(&peer->keepalive_link,
 			      &rxnet->peer_keepalive[slot & mask]);
-		rxrpc_put_peer(peer);
+		rxrpc_put_peer_locked(peer);
 	}
 
 	spin_unlock_bh(&rxnet->peer_hash_lock);

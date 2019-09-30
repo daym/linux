@@ -12,12 +12,10 @@
 #include "xfs_trans_resv.h"
 #include "xfs_bit.h"
 #include "xfs_mount.h"
-#include "xfs_da_format.h"
 #include "xfs_defer.h"
 #include "xfs_inode.h"
 #include "xfs_btree.h"
 #include "xfs_trans.h"
-#include "xfs_extfree_item.h"
 #include "xfs_alloc.h"
 #include "xfs_bmap.h"
 #include "xfs_bmap_util.h"
@@ -28,11 +26,8 @@
 #include "xfs_trans_space.h"
 #include "xfs_trace.h"
 #include "xfs_icache.h"
-#include "xfs_log.h"
-#include "xfs_rmap_btree.h"
 #include "xfs_iomap.h"
 #include "xfs_reflink.h"
-#include "xfs_refcount.h"
 
 /* Kernel only BMAP related definitions and functions */
 
@@ -44,9 +39,9 @@
 xfs_daddr_t
 xfs_fsb_to_db(struct xfs_inode *ip, xfs_fsblock_t fsb)
 {
-	return (XFS_IS_REALTIME_INODE(ip) ? \
-		 (xfs_daddr_t)XFS_FSB_TO_BB((ip)->i_mount, (fsb)) : \
-		 XFS_FSB_TO_DADDR((ip)->i_mount, (fsb)));
+	if (XFS_IS_REALTIME_INODE(ip))
+		return XFS_FSB_TO_BB(ip->i_mount, fsb);
+	return XFS_FSB_TO_DADDR(ip->i_mount, fsb);
 }
 
 /*
@@ -276,7 +271,7 @@ xfs_bmap_count_tree(
 	struct xfs_btree_block	*block, *nextblock;
 	int			numrecs;
 
-	error = xfs_btree_read_bufl(mp, tp, bno, 0, &bp, XFS_BMAP_BTREE_REF,
+	error = xfs_btree_read_bufl(mp, tp, bno, &bp, XFS_BMAP_BTREE_REF,
 						&xfs_bmbt_buf_ops);
 	if (error)
 		return error;
@@ -287,7 +282,7 @@ xfs_bmap_count_tree(
 		/* Not at node above leaves, count this level of nodes */
 		nextbno = be64_to_cpu(block->bb_u.l.bb_rightsib);
 		while (nextbno != NULLFSBLOCK) {
-			error = xfs_btree_read_bufl(mp, tp, nextbno, 0, &nbp,
+			error = xfs_btree_read_bufl(mp, tp, nextbno, &nbp,
 						XFS_BMAP_BTREE_REF,
 						&xfs_bmbt_buf_ops);
 			if (error)
@@ -321,7 +316,7 @@ xfs_bmap_count_tree(
 			if (nextbno == NULLFSBLOCK)
 				break;
 			bno = nextbno;
-			error = xfs_btree_read_bufl(mp, tp, bno, 0, &bp,
+			error = xfs_btree_read_bufl(mp, tp, bno, &bp,
 						XFS_BMAP_BTREE_REF,
 						&xfs_bmbt_buf_ops);
 			if (error)
@@ -406,10 +401,10 @@ xfs_getbmap_report_one(
 	struct xfs_bmbt_irec	*got)
 {
 	struct kgetbmap		*p = out + bmv->bmv_entries;
-	bool			shared = false, trimmed = false;
+	bool			shared = false;
 	int			error;
 
-	error = xfs_reflink_trim_around_shared(ip, got, &shared, &trimmed);
+	error = xfs_reflink_trim_around_shared(ip, got, &shared);
 	if (error)
 		return error;
 
@@ -702,13 +697,9 @@ xfs_bmap_punch_delalloc_range(
 	struct xfs_iext_cursor	icur;
 	int			error = 0;
 
-	xfs_ilock(ip, XFS_ILOCK_EXCL);
-	if (!(ifp->if_flags & XFS_IFEXTENTS)) {
-		error = xfs_iread_extents(NULL, ip, XFS_DATA_FORK);
-		if (error)
-			goto out_unlock;
-	}
+	ASSERT(ifp->if_flags & XFS_IFEXTENTS);
 
+	xfs_ilock(ip, XFS_ILOCK_EXCL);
 	if (!xfs_iext_lookup_extent_before(ip, ifp, &end_fsb, &icur, &got))
 		goto out_unlock;
 
@@ -1046,45 +1037,7 @@ out_trans_cancel:
 	goto out_unlock;
 }
 
-static int
-xfs_adjust_extent_unmap_boundaries(
-	struct xfs_inode	*ip,
-	xfs_fileoff_t		*startoffset_fsb,
-	xfs_fileoff_t		*endoffset_fsb)
-{
-	struct xfs_mount	*mp = ip->i_mount;
-	struct xfs_bmbt_irec	imap;
-	int			nimap, error;
-	xfs_extlen_t		mod = 0;
-
-	nimap = 1;
-	error = xfs_bmapi_read(ip, *startoffset_fsb, 1, &imap, &nimap, 0);
-	if (error)
-		return error;
-
-	if (nimap && imap.br_startblock != HOLESTARTBLOCK) {
-		ASSERT(imap.br_startblock != DELAYSTARTBLOCK);
-		div_u64_rem(imap.br_startblock, mp->m_sb.sb_rextsize, &mod);
-		if (mod)
-			*startoffset_fsb += mp->m_sb.sb_rextsize - mod;
-	}
-
-	nimap = 1;
-	error = xfs_bmapi_read(ip, *endoffset_fsb - 1, 1, &imap, &nimap, 0);
-	if (error)
-		return error;
-
-	if (nimap && imap.br_startblock != HOLESTARTBLOCK) {
-		ASSERT(imap.br_startblock != DELAYSTARTBLOCK);
-		mod++;
-		if (mod && mod != mp->m_sb.sb_rextsize)
-			*endoffset_fsb -= mod;
-	}
-
-	return 0;
-}
-
-static int
+int
 xfs_flush_unmap_range(
 	struct xfs_inode	*ip,
 	xfs_off_t		offset,
@@ -1137,19 +1090,8 @@ xfs_free_file_space(
 	endoffset_fsb = XFS_B_TO_FSBT(mp, offset + len);
 
 	/*
-	 * Need to zero the stuff we're not freeing, on disk.  If it's a RT file
-	 * and we can't use unwritten extents then we actually need to ensure
-	 * to zero the whole extent, otherwise we just need to take of block
-	 * boundaries, and xfs_bunmapi will handle the rest.
+	 * Need to zero the stuff we're not freeing, on disk.
 	 */
-	if (XFS_IS_REALTIME_INODE(ip) &&
-	    !xfs_sb_version_hasextflgbit(&mp->m_sb)) {
-		error = xfs_adjust_extent_unmap_boundaries(ip, &startoffset_fsb,
-				&endoffset_fsb);
-		if (error)
-			return error;
-	}
-
 	if (endoffset_fsb > startoffset_fsb) {
 		while (!done) {
 			error = xfs_unmap_extent(ip, startoffset_fsb,
@@ -1179,9 +1121,9 @@ xfs_free_file_space(
 	 * page could be mmap'd and iomap_zero_range doesn't do that for us.
 	 * Writeback of the eof page will do this, albeit clumsily.
 	 */
-	if (offset + len >= XFS_ISIZE(ip) && ((offset + len) & PAGE_MASK)) {
+	if (offset + len >= XFS_ISIZE(ip) && offset_in_page(offset + len) > 0) {
 		error = filemap_write_and_wait_range(VFS_I(ip)->i_mapping,
-				(offset + len) & ~PAGE_MASK, LLONG_MAX);
+				round_down(offset + len, PAGE_SIZE), LLONG_MAX);
 	}
 
 	return error;
@@ -1215,16 +1157,13 @@ xfs_zero_file_space(
 	 * by virtue of the hole punch.
 	 */
 	error = xfs_free_file_space(ip, offset, len);
-	if (error)
-		goto out;
+	if (error || xfs_is_always_cow_inode(ip))
+		return error;
 
-	error = xfs_alloc_file_space(ip, round_down(offset, blksize),
+	return xfs_alloc_file_space(ip, round_down(offset, blksize),
 				     round_up(offset + len, blksize) -
 				     round_down(offset, blksize),
 				     XFS_BMAPI_PREALLOC);
-out:
-	return error;
-
 }
 
 static int
@@ -1248,11 +1187,7 @@ xfs_prepare_shift(
 	 * Writeback and invalidate cache for the remainder of the file as we're
 	 * about to shift down every extent from offset to EOF.
 	 */
-	error = filemap_write_and_wait_range(VFS_I(ip)->i_mapping, offset, -1);
-	if (error)
-		return error;
-	error = invalidate_inode_pages2_range(VFS_I(ip)->i_mapping,
-					offset >> PAGE_SHIFT, -1);
+	error = xfs_flush_unmap_range(ip, offset, XFS_ISIZE(ip));
 	if (error)
 		return error;
 
@@ -1584,7 +1519,7 @@ xfs_swap_extent_rmap(
 					tirec.br_blockcount, &irec,
 					&nimaps, 0);
 			if (error)
-				goto out_defer;
+				goto out;
 			ASSERT(nimaps == 1);
 			ASSERT(tirec.br_startoff == irec.br_startoff);
 			trace_xfs_swap_extent_rmap_remap_piece(ip, &irec);
@@ -1597,24 +1532,16 @@ xfs_swap_extent_rmap(
 			trace_xfs_swap_extent_rmap_remap_piece(tip, &uirec);
 
 			/* Remove the mapping from the donor file. */
-			error = xfs_bmap_unmap_extent(tp, tip, &uirec);
-			if (error)
-				goto out_defer;
+			xfs_bmap_unmap_extent(tp, tip, &uirec);
 
 			/* Remove the mapping from the source file. */
-			error = xfs_bmap_unmap_extent(tp, ip, &irec);
-			if (error)
-				goto out_defer;
+			xfs_bmap_unmap_extent(tp, ip, &irec);
 
 			/* Map the donor file's blocks into the source file. */
-			error = xfs_bmap_map_extent(tp, ip, &uirec);
-			if (error)
-				goto out_defer;
+			xfs_bmap_map_extent(tp, ip, &uirec);
 
 			/* Map the source file's blocks into the donor file. */
-			error = xfs_bmap_map_extent(tp, tip, &irec);
-			if (error)
-				goto out_defer;
+			xfs_bmap_map_extent(tp, tip, &irec);
 
 			error = xfs_defer_finish(tpp);
 			tp = *tpp;
@@ -1636,8 +1563,6 @@ xfs_swap_extent_rmap(
 	tip->i_d.di_flags2 = tip_flags2;
 	return 0;
 
-out_defer:
-	xfs_defer_cancel(tp);
 out:
 	trace_xfs_swap_extent_rmap_error(ip, error, _RET_IP_);
 	tip->i_d.di_flags2 = tip_flags2;
@@ -1829,6 +1754,12 @@ xfs_swap_extents(
 	error = xfs_swap_extent_flush(tip);
 	if (error)
 		goto out_unlock;
+
+	if (xfs_inode_has_cow_data(tip)) {
+		error = xfs_reflink_cancel_cow_range(tip, 0, NULLFILEOFF, true);
+		if (error)
+			return error;
+	}
 
 	/*
 	 * Extent "swapping" with rmap requires a permanent reservation and

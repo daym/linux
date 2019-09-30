@@ -46,7 +46,7 @@ out:
 
 int dwc3_host_init(struct dwc3 *dwc)
 {
-	struct property_entry	props[3];
+	struct property_entry	props[4];
 	struct platform_device	*xhci;
 	int			ret, irq;
 	struct resource		*res;
@@ -85,13 +85,16 @@ int dwc3_host_init(struct dwc3 *dwc)
 						DWC3_XHCI_RESOURCES_NUM);
 	if (ret) {
 		dev_err(dwc->dev, "couldn't add resources to xHCI device\n");
-		goto err1;
+		goto err;
 	}
 
 	memset(props, 0, sizeof(struct property_entry) * ARRAY_SIZE(props));
 
 	if (dwc->usb3_lpm_capable)
 		props[prop_idx++].name = "usb3-lpm-capable";
+
+	if (dwc->usb2_lpm_disable)
+		props[prop_idx++].name = "usb2-lpm-disable";
 
 	/**
 	 * WORKAROUND: dwc3 revisions <=3.00a have a limitation
@@ -109,37 +112,23 @@ int dwc3_host_init(struct dwc3 *dwc)
 		ret = platform_device_add_properties(xhci, props);
 		if (ret) {
 			dev_err(dwc->dev, "failed to add properties to xHCI\n");
-			goto err1;
+			goto err;
 		}
 	}
-
-	phy_create_lookup(dwc->usb2_generic_phy, "usb2-phy",
-			  dev_name(dwc->dev));
-	phy_create_lookup(dwc->usb3_generic_phy, "usb3-phy",
-			  dev_name(dwc->dev));
 
 	ret = platform_device_add(xhci);
 	if (ret) {
 		dev_err(dwc->dev, "failed to register xHCI device\n");
-		goto err2;
+		goto err;
 	}
 
 	return 0;
-err2:
-	phy_remove_lookup(dwc->usb2_generic_phy, "usb2-phy",
-			  dev_name(dwc->dev));
-	phy_remove_lookup(dwc->usb3_generic_phy, "usb3-phy",
-			  dev_name(dwc->dev));
-err1:
+err:
 	platform_device_put(xhci);
 	return ret;
 }
 
 void dwc3_host_exit(struct dwc3 *dwc)
 {
-	phy_remove_lookup(dwc->usb2_generic_phy, "usb2-phy",
-			  dev_name(dwc->dev));
-	phy_remove_lookup(dwc->usb3_generic_phy, "usb3-phy",
-			  dev_name(dwc->dev));
 	platform_device_unregister(dwc->xhci);
 }

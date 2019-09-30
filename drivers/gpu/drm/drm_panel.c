@@ -24,7 +24,6 @@
 #include <linux/err.h>
 #include <linux/module.h>
 
-#include <drm/drm_device.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_panel.h>
 
@@ -37,6 +36,9 @@ static LIST_HEAD(panel_list);
  * The DRM panel helpers allow drivers to register panel objects with a
  * central registry and provide functions to retrieve those panels in display
  * drivers.
+ *
+ * For easy integration into drivers using the &drm_bridge infrastructure please
+ * take look at drm_panel_bridge_add() and devm_drm_panel_bridge_add().
  */
 
 /**
@@ -105,13 +107,6 @@ int drm_panel_attach(struct drm_panel *panel, struct drm_connector *connector)
 	if (panel->connector)
 		return -EBUSY;
 
-	panel->link = device_link_add(connector->dev->dev, panel->dev, 0);
-	if (!panel->link) {
-		dev_err(panel->dev, "failed to link panel to %s\n",
-			dev_name(connector->dev->dev));
-		return -EINVAL;
-	}
-
 	panel->connector = connector;
 	panel->drm = connector->dev;
 
@@ -128,19 +123,109 @@ EXPORT_SYMBOL(drm_panel_attach);
  *
  * This function should not be called by the panel device itself. It
  * is only for the drm device that called drm_panel_attach().
+ */
+void drm_panel_detach(struct drm_panel *panel)
+{
+	panel->connector = NULL;
+	panel->drm = NULL;
+}
+EXPORT_SYMBOL(drm_panel_detach);
+
+/**
+ * drm_panel_prepare - power on a panel
+ * @panel: DRM panel
+ *
+ * Calling this function will enable power and deassert any reset signals to
+ * the panel. After this has completed it is possible to communicate with any
+ * integrated circuitry via a command bus.
  *
  * Return: 0 on success or a negative error code on failure.
  */
-int drm_panel_detach(struct drm_panel *panel)
+int drm_panel_prepare(struct drm_panel *panel)
 {
-	device_link_del(panel->link);
+	if (panel && panel->funcs && panel->funcs->prepare)
+		return panel->funcs->prepare(panel);
 
-	panel->connector = NULL;
-	panel->drm = NULL;
-
-	return 0;
+	return panel ? -ENOSYS : -EINVAL;
 }
-EXPORT_SYMBOL(drm_panel_detach);
+EXPORT_SYMBOL(drm_panel_prepare);
+
+/**
+ * drm_panel_unprepare - power off a panel
+ * @panel: DRM panel
+ *
+ * Calling this function will completely power off a panel (assert the panel's
+ * reset, turn off power supplies, ...). After this function has completed, it
+ * is usually no longer possible to communicate with the panel until another
+ * call to drm_panel_prepare().
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int drm_panel_unprepare(struct drm_panel *panel)
+{
+	if (panel && panel->funcs && panel->funcs->unprepare)
+		return panel->funcs->unprepare(panel);
+
+	return panel ? -ENOSYS : -EINVAL;
+}
+EXPORT_SYMBOL(drm_panel_unprepare);
+
+/**
+ * drm_panel_enable - enable a panel
+ * @panel: DRM panel
+ *
+ * Calling this function will cause the panel display drivers to be turned on
+ * and the backlight to be enabled. Content will be visible on screen after
+ * this call completes.
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int drm_panel_enable(struct drm_panel *panel)
+{
+	if (panel && panel->funcs && panel->funcs->enable)
+		return panel->funcs->enable(panel);
+
+	return panel ? -ENOSYS : -EINVAL;
+}
+EXPORT_SYMBOL(drm_panel_enable);
+
+/**
+ * drm_panel_disable - disable a panel
+ * @panel: DRM panel
+ *
+ * This will typically turn off the panel's backlight or disable the display
+ * drivers. For smart panels it should still be possible to communicate with
+ * the integrated circuitry via any command bus after this call.
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int drm_panel_disable(struct drm_panel *panel)
+{
+	if (panel && panel->funcs && panel->funcs->disable)
+		return panel->funcs->disable(panel);
+
+	return panel ? -ENOSYS : -EINVAL;
+}
+EXPORT_SYMBOL(drm_panel_disable);
+
+/**
+ * drm_panel_get_modes - probe the available display modes of a panel
+ * @panel: DRM panel
+ *
+ * The modes probed from the panel are automatically added to the connector
+ * that the panel is attached to.
+ *
+ * Return: The number of modes available from the panel on success or a
+ * negative error code on failure.
+ */
+int drm_panel_get_modes(struct drm_panel *panel)
+{
+	if (panel && panel->funcs && panel->funcs->get_modes)
+		return panel->funcs->get_modes(panel);
+
+	return panel ? -ENOSYS : -EINVAL;
+}
+EXPORT_SYMBOL(drm_panel_get_modes);
 
 #ifdef CONFIG_OF
 /**
@@ -152,7 +237,9 @@ EXPORT_SYMBOL(drm_panel_detach);
  *
  * Return: A pointer to the panel registered for the specified device tree
  * node or an ERR_PTR() if no panel matching the device tree node can be found.
+ *
  * Possible error codes returned by this function:
+ *
  * - EPROBE_DEFER: the panel device has not been probed yet, and the caller
  *   should retry later
  * - ENODEV: the device is not available (status != "okay" or "ok")

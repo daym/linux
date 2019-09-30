@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/acpi.h>
 #include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
@@ -163,8 +165,6 @@ static const enum gpiod_flags gpio_flags[] = {
 /* Give this long for the PHY to reset. */
 #define T_PHY_RESET_MS	50
 
-static DEFINE_MUTEX(sfp_mutex);
-
 struct sff_data {
 	unsigned int gpios;
 	bool (*module_supported)(const struct sfp_eeprom_id *id);
@@ -185,11 +185,14 @@ struct sfp {
 	int (*write)(struct sfp *, bool, u8, void *, size_t);
 
 	struct gpio_desc *gpio[GPIO_MAX];
+	int gpio_irq[GPIO_MAX];
 
+	bool attached;
+	struct mutex st_mutex;			/* Protects state */
 	unsigned int state;
 	struct delayed_work poll;
 	struct delayed_work timeout;
-	struct mutex sm_mutex;
+	struct mutex sm_mutex;			/* Protects state machine */
 	unsigned char sm_mod_state;
 	unsigned char sm_dev_state;
 	unsigned short sm_state;
@@ -281,6 +284,7 @@ static int sfp_i2c_read(struct sfp *sfp, bool a2, u8 dev_addr, void *buf,
 {
 	struct i2c_msg msgs[2];
 	u8 bus_addr = a2 ? 0x51 : 0x50;
+	size_t this_len;
 	int ret;
 
 	msgs[0].addr = bus_addr;
@@ -292,11 +296,26 @@ static int sfp_i2c_read(struct sfp *sfp, bool a2, u8 dev_addr, void *buf,
 	msgs[1].len = len;
 	msgs[1].buf = buf;
 
-	ret = i2c_transfer(sfp->i2c, msgs, ARRAY_SIZE(msgs));
-	if (ret < 0)
-		return ret;
+	while (len) {
+		this_len = len;
+		if (this_len > 16)
+			this_len = 16;
 
-	return ret == ARRAY_SIZE(msgs) ? len : 0;
+		msgs[1].len = this_len;
+
+		ret = i2c_transfer(sfp->i2c, msgs, ARRAY_SIZE(msgs));
+		if (ret < 0)
+			return ret;
+
+		if (ret != ARRAY_SIZE(msgs))
+			break;
+
+		msgs[1].buf += this_len;
+		dev_addr += this_len;
+		len -= this_len;
+	}
+
+	return msgs[1].buf - (u8 *)buf;
 }
 
 static int sfp_i2c_write(struct sfp *sfp, bool a2, u8 dev_addr, void *buf,
@@ -410,6 +429,7 @@ static umode_t sfp_hwmon_is_visible(const void *data,
 				return 0;
 			/* fall through */
 		case hwmon_temp_input:
+		case hwmon_temp_label:
 			return 0444;
 		default:
 			return 0;
@@ -428,6 +448,7 @@ static umode_t sfp_hwmon_is_visible(const void *data,
 				return 0;
 			/* fall through */
 		case hwmon_in_input:
+		case hwmon_in_label:
 			return 0444;
 		default:
 			return 0;
@@ -446,6 +467,7 @@ static umode_t sfp_hwmon_is_visible(const void *data,
 				return 0;
 			/* fall through */
 		case hwmon_curr_input:
+		case hwmon_curr_label:
 			return 0444;
 		default:
 			return 0;
@@ -473,6 +495,7 @@ static umode_t sfp_hwmon_is_visible(const void *data,
 				return 0;
 			/* fall through */
 		case hwmon_power_input:
+		case hwmon_power_label:
 			return 0444;
 		default:
 			return 0;
@@ -498,7 +521,7 @@ static int sfp_hwmon_read_sensor(struct sfp *sfp, int reg, long *value)
 
 static void sfp_hwmon_to_rx_power(long *value)
 {
-	*value = DIV_ROUND_CLOSEST(*value, 100);
+	*value = DIV_ROUND_CLOSEST(*value, 10);
 }
 
 static void sfp_hwmon_calibrate(struct sfp *sfp, unsigned int slope, int offset,
@@ -968,9 +991,63 @@ static int sfp_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 	}
 }
 
+static const char *const sfp_hwmon_power_labels[] = {
+	"TX_power",
+	"RX_power",
+};
+
+static int sfp_hwmon_read_string(struct device *dev,
+				 enum hwmon_sensor_types type,
+				 u32 attr, int channel, const char **str)
+{
+	switch (type) {
+	case hwmon_curr:
+		switch (attr) {
+		case hwmon_curr_label:
+			*str = "bias";
+			return 0;
+		default:
+			return -EOPNOTSUPP;
+		}
+		break;
+	case hwmon_temp:
+		switch (attr) {
+		case hwmon_temp_label:
+			*str = "temperature";
+			return 0;
+		default:
+			return -EOPNOTSUPP;
+		}
+		break;
+	case hwmon_in:
+		switch (attr) {
+		case hwmon_in_label:
+			*str = "VCC";
+			return 0;
+		default:
+			return -EOPNOTSUPP;
+		}
+		break;
+	case hwmon_power:
+		switch (attr) {
+		case hwmon_power_label:
+			*str = sfp_hwmon_power_labels[channel];
+			return 0;
+		default:
+			return -EOPNOTSUPP;
+		}
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	return -EOPNOTSUPP;
+}
+
 static const struct hwmon_ops sfp_hwmon_ops = {
 	.is_visible = sfp_hwmon_is_visible,
 	.read = sfp_hwmon_read,
+	.read_string = sfp_hwmon_read_string,
 };
 
 static u32 sfp_hwmon_chip_config[] = {
@@ -988,7 +1065,8 @@ static u32 sfp_hwmon_temp_config[] = {
 	HWMON_T_MAX | HWMON_T_MIN |
 	HWMON_T_MAX_ALARM | HWMON_T_MIN_ALARM |
 	HWMON_T_CRIT | HWMON_T_LCRIT |
-	HWMON_T_CRIT_ALARM | HWMON_T_LCRIT_ALARM,
+	HWMON_T_CRIT_ALARM | HWMON_T_LCRIT_ALARM |
+	HWMON_T_LABEL,
 	0,
 };
 
@@ -1002,7 +1080,8 @@ static u32 sfp_hwmon_vcc_config[] = {
 	HWMON_I_MAX | HWMON_I_MIN |
 	HWMON_I_MAX_ALARM | HWMON_I_MIN_ALARM |
 	HWMON_I_CRIT | HWMON_I_LCRIT |
-	HWMON_I_CRIT_ALARM | HWMON_I_LCRIT_ALARM,
+	HWMON_I_CRIT_ALARM | HWMON_I_LCRIT_ALARM |
+	HWMON_I_LABEL,
 	0,
 };
 
@@ -1016,7 +1095,8 @@ static u32 sfp_hwmon_bias_config[] = {
 	HWMON_C_MAX | HWMON_C_MIN |
 	HWMON_C_MAX_ALARM | HWMON_C_MIN_ALARM |
 	HWMON_C_CRIT | HWMON_C_LCRIT |
-	HWMON_C_CRIT_ALARM | HWMON_C_LCRIT_ALARM,
+	HWMON_C_CRIT_ALARM | HWMON_C_LCRIT_ALARM |
+	HWMON_C_LABEL,
 	0,
 };
 
@@ -1031,13 +1111,15 @@ static u32 sfp_hwmon_power_config[] = {
 	HWMON_P_MAX | HWMON_P_MIN |
 	HWMON_P_MAX_ALARM | HWMON_P_MIN_ALARM |
 	HWMON_P_CRIT | HWMON_P_LCRIT |
-	HWMON_P_CRIT_ALARM | HWMON_P_LCRIT_ALARM,
+	HWMON_P_CRIT_ALARM | HWMON_P_LCRIT_ALARM |
+	HWMON_P_LABEL,
 	/* Receive power */
 	HWMON_P_INPUT |
 	HWMON_P_MAX | HWMON_P_MIN |
 	HWMON_P_MAX_ALARM | HWMON_P_MIN_ALARM |
 	HWMON_P_CRIT | HWMON_P_LCRIT |
-	HWMON_P_CRIT_ALARM | HWMON_P_LCRIT_ALARM,
+	HWMON_P_CRIT_ALARM | HWMON_P_LCRIT_ALARM |
+	HWMON_P_LABEL,
 	0,
 };
 
@@ -1098,8 +1180,11 @@ static int sfp_hwmon_insert(struct sfp *sfp)
 
 static void sfp_hwmon_remove(struct sfp *sfp)
 {
-	hwmon_device_unregister(sfp->hwmon_dev);
-	kfree(sfp->hwmon_name);
+	if (!IS_ERR_OR_NULL(sfp->hwmon_dev)) {
+		hwmon_device_unregister(sfp->hwmon_dev);
+		sfp->hwmon_dev = NULL;
+		kfree(sfp->hwmon_name);
+	}
 }
 #else
 static int sfp_hwmon_insert(struct sfp *sfp)
@@ -1474,7 +1559,7 @@ static void sfp_sm_event(struct sfp *sfp, unsigned int event)
 	 */
 	switch (sfp->sm_mod_state) {
 	default:
-		if (event == SFP_E_INSERT) {
+		if (event == SFP_E_INSERT && sfp->attached) {
 			sfp_module_tx_disable(sfp);
 			sfp_sm_ins_next(sfp, SFP_MOD_PROBE, T_PROBE_INIT);
 		}
@@ -1606,6 +1691,19 @@ static void sfp_sm_event(struct sfp *sfp, unsigned int event)
 	mutex_unlock(&sfp->sm_mutex);
 }
 
+static void sfp_attach(struct sfp *sfp)
+{
+	sfp->attached = true;
+	if (sfp->state & SFP_F_PRESENT)
+		sfp_sm_event(sfp, SFP_E_INSERT);
+}
+
+static void sfp_detach(struct sfp *sfp)
+{
+	sfp->attached = false;
+	sfp_sm_event(sfp, SFP_E_REMOVE);
+}
+
 static void sfp_start(struct sfp *sfp)
 {
 	sfp_sm_event(sfp, SFP_E_DEV_UP);
@@ -1666,6 +1764,8 @@ static int sfp_module_eeprom(struct sfp *sfp, struct ethtool_eeprom *ee,
 }
 
 static const struct sfp_socket_ops sfp_module_ops = {
+	.attach = sfp_attach,
+	.detach = sfp_detach,
 	.start = sfp_start,
 	.stop = sfp_stop,
 	.module_info = sfp_module_info,
@@ -1685,6 +1785,7 @@ static void sfp_check_state(struct sfp *sfp)
 {
 	unsigned int state, i, changed;
 
+	mutex_lock(&sfp->st_mutex);
 	state = sfp_get_state(sfp);
 	changed = state ^ sfp->state;
 	changed &= SFP_F_PRESENT | SFP_F_LOS | SFP_F_TX_FAULT;
@@ -1710,6 +1811,7 @@ static void sfp_check_state(struct sfp *sfp)
 		sfp_sm_event(sfp, state & SFP_F_LOS ?
 				SFP_E_LOS_HIGH : SFP_E_LOS_LOW);
 	rtnl_unlock();
+	mutex_unlock(&sfp->st_mutex);
 }
 
 static irqreturn_t sfp_irq(int irq, void *data)
@@ -1740,6 +1842,7 @@ static struct sfp *sfp_alloc(struct device *dev)
 	sfp->dev = dev;
 
 	mutex_init(&sfp->sm_mutex);
+	mutex_init(&sfp->st_mutex);
 	INIT_DELAYED_WORK(&sfp->poll, sfp_poll);
 	INIT_DELAYED_WORK(&sfp->timeout, sfp_timeout);
 
@@ -1764,9 +1867,10 @@ static void sfp_cleanup(void *data)
 static int sfp_probe(struct platform_device *pdev)
 {
 	const struct sff_data *sff;
+	struct i2c_adapter *i2c;
 	struct sfp *sfp;
 	bool poll = false;
-	int irq, err, i;
+	int err, i;
 
 	sfp = sfp_alloc(&pdev->dev);
 	if (IS_ERR(sfp))
@@ -1783,7 +1887,6 @@ static int sfp_probe(struct platform_device *pdev)
 	if (pdev->dev.of_node) {
 		struct device_node *node = pdev->dev.of_node;
 		const struct of_device_id *id;
-		struct i2c_adapter *i2c;
 		struct device_node *np;
 
 		id = of_match_node(sfp_of_match, node);
@@ -1800,14 +1903,32 @@ static int sfp_probe(struct platform_device *pdev)
 
 		i2c = of_find_i2c_adapter_by_node(np);
 		of_node_put(np);
-		if (!i2c)
-			return -EPROBE_DEFER;
+	} else if (has_acpi_companion(&pdev->dev)) {
+		struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
+		struct fwnode_handle *fw = acpi_fwnode_handle(adev);
+		struct fwnode_reference_args args;
+		struct acpi_handle *acpi_handle;
+		int ret;
 
-		err = sfp_i2c_configure(sfp, i2c);
-		if (err < 0) {
-			i2c_put_adapter(i2c);
-			return err;
+		ret = acpi_node_get_property_reference(fw, "i2c-bus", 0, &args);
+		if (ret || !is_acpi_device_node(args.fwnode)) {
+			dev_err(&pdev->dev, "missing 'i2c-bus' property\n");
+			return -ENODEV;
 		}
+
+		acpi_handle = ACPI_HANDLE_FWNODE(args.fwnode);
+		i2c = i2c_acpi_find_adapter_by_handle(acpi_handle);
+	} else {
+		return -EINVAL;
+	}
+
+	if (!i2c)
+		return -EPROBE_DEFER;
+
+	err = sfp_i2c_configure(sfp, i2c);
+	if (err < 0) {
+		i2c_put_adapter(i2c);
+		return err;
 	}
 
 	for (i = 0; i < GPIO_MAX; i++)
@@ -1833,10 +1954,6 @@ static int sfp_probe(struct platform_device *pdev)
 	dev_info(sfp->dev, "Host maximum power %u.%uW\n",
 		 sfp->max_power_mW / 1000, (sfp->max_power_mW / 100) % 10);
 
-	sfp->sfp_bus = sfp_register_socket(sfp->dev, sfp, &sfp_module_ops);
-	if (!sfp->sfp_bus)
-		return -ENOMEM;
-
 	/* Get the initial state, and always signal TX disable,
 	 * since the network interface will not be up.
 	 */
@@ -1847,28 +1964,27 @@ static int sfp_probe(struct platform_device *pdev)
 		sfp->state |= SFP_F_RATE_SELECT;
 	sfp_set_state(sfp, sfp->state);
 	sfp_module_tx_disable(sfp);
-	rtnl_lock();
-	if (sfp->state & SFP_F_PRESENT)
-		sfp_sm_event(sfp, SFP_E_INSERT);
-	rtnl_unlock();
 
 	for (i = 0; i < GPIO_MAX; i++) {
 		if (gpio_flags[i] != GPIOD_IN || !sfp->gpio[i])
 			continue;
 
-		irq = gpiod_to_irq(sfp->gpio[i]);
-		if (!irq) {
+		sfp->gpio_irq[i] = gpiod_to_irq(sfp->gpio[i]);
+		if (!sfp->gpio_irq[i]) {
 			poll = true;
 			continue;
 		}
 
-		err = devm_request_threaded_irq(sfp->dev, irq, NULL, sfp_irq,
+		err = devm_request_threaded_irq(sfp->dev, sfp->gpio_irq[i],
+						NULL, sfp_irq,
 						IRQF_ONESHOT |
 						IRQF_TRIGGER_RISING |
 						IRQF_TRIGGER_FALLING,
 						dev_name(sfp->dev), sfp);
-		if (err)
+		if (err) {
+			sfp->gpio_irq[i] = 0;
 			poll = true;
+		}
 	}
 
 	if (poll)
@@ -1883,6 +1999,10 @@ static int sfp_probe(struct platform_device *pdev)
 		dev_warn(sfp->dev,
 			 "No tx_disable pin: SFP modules will always be emitting.\n");
 
+	sfp->sfp_bus = sfp_register_socket(sfp->dev, sfp, &sfp_module_ops);
+	if (!sfp->sfp_bus)
+		return -ENOMEM;
+
 	return 0;
 }
 
@@ -1895,9 +2015,26 @@ static int sfp_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void sfp_shutdown(struct platform_device *pdev)
+{
+	struct sfp *sfp = platform_get_drvdata(pdev);
+	int i;
+
+	for (i = 0; i < GPIO_MAX; i++) {
+		if (!sfp->gpio_irq[i])
+			continue;
+
+		devm_free_irq(sfp->dev, sfp->gpio_irq[i], sfp);
+	}
+
+	cancel_delayed_work_sync(&sfp->poll);
+	cancel_delayed_work_sync(&sfp->timeout);
+}
+
 static struct platform_driver sfp_driver = {
 	.probe = sfp_probe,
 	.remove = sfp_remove,
+	.shutdown = sfp_shutdown,
 	.driver = {
 		.name = "sfp",
 		.of_match_table = sfp_of_match,
