@@ -15,4 +15,10 @@ config CAN_MCP251X
 	  Driver for the Microchip MCP251x and MCP25625 SPI CAN
 	  controllers.
 
+config CAN_TSS463AA
+        tristate "Atmel TSS463AA SPI VAN controller"
+        depends on CAN_DEV && SPI && HAS_DMA
+        ---help---
+          Driver for the Atmel TSS463AA SPI VAN controller.
+
 endmenu

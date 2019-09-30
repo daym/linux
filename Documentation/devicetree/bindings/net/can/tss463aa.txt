@@ -1,0 +1,114 @@
+Atmel TSS463AA VAN controller Device Tree Bindings
+--------------------------------------------------
+
+The first node is a child node of the SPI device tree node.
+
+Required properties:
+- compatible: "atmel,tss463aa"
+- reg: Chip[select] number.
+- interrupts: interrupt specifier for the sole interrupt.
+- clock: phandle and clock specifier.
+- channels: List of channel configurations.
+
+Optional:
+- tss463aa,crystal-clock: When using a crystal clock, the TSS463AA cannot send
+the Bytes [0xAA, 0x55] it otherwise would send in order to give the client a
+chance to keep synchronized with the TSS463AA.
+- tss463aa,inverted-rx: The RX on the TSS463AA is connected in a way that
+the actual level is inverted compared to the level on the VAN bus.
+- tss463aa,invert-tx: The TX on the TSS463AA is connected in a way that
+the actual level on the VAN bus will be inverted compared to it.
+- tss463aa,pulse-coded-modulation: The TSS463AA is connected to the VAN bus
+via an optical or radio link (the TSS463AA uses pulsed coding).
+- tss463aa,transmission-retry-count: How often to retry transmissions.  Not
+to retry transmissions (0) means to make one transmission attempt.
+- tss463aa,autonomous: The TSS463AA will transmit Start-Of-Frame sequences.
+If in doubt, DO NOT enable this.
+- tss463aa,diagnostic-mode: The TSS463AA has multiple different failover
+modes.  TSS463AA_DIAGNOSTIC_MODE_RXD0 means it will use the input RXD0
+(assumed to be the differential input).
+TSS463AA_DIAGNOSTIC_MODE_RXD2 means it will use the input RXD2 (assumed
+to be the inverted input).
+TSS463AA_DIAGNOSTIC_MODE_RXD1 means it will use the input RXD1 (assumed
+to be the non-inverted input).
+TSS463AA_DIAGNOSTIC_MODE_AUTO means it will automatically switch between
+these modes, preferring RXD0, then failing over to either either RXD1
+or RXD2 depending on the diagnosis state.
+- tss463aa,disable-system-diagnosis: Disables system diagnosis.
+- tss463aa,disable-transmission-diagnosis: Disables transmission diagnosis.
+
+Child nodes of the "channels" node:
+
+- tss463aa,disable-recessive-ext: Makes the EXT bit on the VAN bus not
+recessive.  This is non-standard.  Do not use.
+- tss463aa,listener: This channel is a listener.
+- tss463aa,rnw: This channel is for Reply requests.
+- tss463aa,remote-transmission-request: This channel requests remote
+transmission.  Do set it on listening channels.
+- tss463aa,immediate-reply: This channel already has data that will be sent
+immediately without any CPU involvement (if requested by a VAN bus node).
+- tss463aa,request-ack: This channel requests acknowledgements from the
+receivers.
+- tss463aa,msgpointer: The pointer of the start of the buffer for payload
+data for this channel in the TSS463AA's Message DATA RAM.
+- tss463aa,msglen: The length of the buffer for payload data for this
+channel in the TSS463AA's Message DATA RAM.
+- tss463aa,link: When present, defines this channel to be a link to
+another channel.  Note: Links are followed only once (no chains).
+- tss463aa,idtag: The tag to match / send on this channel.
+- tss463aa,idmask: The mask to match tags with on this channel.
+
+Example
+-------
+
+tss463aa_clock_source: oscillator {
+	#clock-cells = <0>;
+	compatible = "fixed-clock";
+	clock-frequency = <4000000>;
+};
+
+van0: tss463aa@1 {
+	compatible = "atmel,tss463aa";
+	reg = <0>;
+	interrupt-parent = <&pio>;
+	interrupts = <8 10 IRQ_TYPE_LEVEL_LOW>;
+	interrupt-names = "activity";
+	spi-max-frequency = <4000000>;
+	spi-cpol;
+	spi-cpha;
+	clocks = <&tss463aa_clock_source>;
+	tss463aa,diagnostic-mode=<TSS463AA_DIAGNOSTIC_MODE_RXD0>;
+	tss463aa,channels {
+		channel@0 {
+			tss463aa,listener;
+			tss463aa,disable-ack;
+			tss463aa,remote-transmission-request;
+			tss463aa,idtag=<0>;
+			tss463aa,idmask=<0>;
+			tss463aa,msgpointer=<0>;
+			tss463aa,msglen=<31>;
+		};
+		channel@1 {
+			tss463aa,disable-ack; /* For Reply requests, reception is possible for a short while each. */
+			tss463aa,msgpointer=<32>;
+			tss463aa,msglen=<31>;
+		};
+	};
+};
+
+Considerations
+--------------
+
+The overall design of the driver assumes that each channel can either transmits or receive, not both.  But there is an exception.
+
+This exception are "Reply" request messages.
+
+These are like IPC calls in the sense of there's a request and an immediate reply that is "part" of the logical unit.
+
+These can be sent via a channel that can transmit.  After the "Reply" request message has been transmitted, one message (the response) is allowed to be received on that channel.  After that, receiving on the channel is disabled again.
+
+This is all well and good, but the actual high-level network layer knows nothing about this IPC stuff.  There's the hope it will be somehow possible to keep a serialized ordering of both TX and RX interleaved - that would help.
+
+It's also possible to wait for a "Reply" request ourselves.  This can be done on an "reception" channel.
+
+After that, the client must respond either immediately or with a deferred reply.If he doesn't, the next "Reply" request cannot be waited for.

@@ -1,0 +1,11 @@
+/* SPDX GPL-2 Danny Milosavljevic <dannym@scratchpost.org> */
+
+#ifndef __DT_BINDINGS_TSS463AA_H__
+#define __DT_BINDINGS_TSS463AA_H__
+
+#define TSS463AA_DIAGNOSTIC_MODE_RXD0 0
+#define TSS463AA_DIAGNOSTIC_MODE_RXD2 1
+#define TSS463AA_DIAGNOSTIC_MODE_RXD1 2
+#define TSS463AA_DIAGNOSTIC_MODE_AUTO 3
+
+#endif /* __DT_BINDINGS_TSS463AA_H__ */

@@ -1,0 +1,18 @@
+                  TSS463AA VAN bus controller driver
+
+"tss463aa.ko" is a driver for the TSS463AA VAN bus controller chip.
+
+The chip provides a buffer and interfaces to the VAN bus on its own.
+The buffer can be used and the chip configured via SPI.
+The driver integrates the chip into the Linux network stack as a CAN device.
+
+Configuration of Reply requests
+===============================
+
+The VAN standard specifies a special kind of request, the Reply request.
+These are supposed to be answered very quickly.
+The reply is either supposed to be in the same frame (!) or deferred
+to (a little bit) later.
+
+If you want to listen to Reply requests, you have to set that up, too.
+
